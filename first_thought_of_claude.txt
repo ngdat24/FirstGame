@@ -1,0 +1,55 @@
+This is solid — you clearly thought through triggers and effects like I suggested, and most mechanics are precise enough to code directly. Here's what I found on the pass, organized by how urgent each is.
+
+**Genuine ambiguities that will block Phase 1 if left unresolved:**
+
+1. **Proxy Test-Taker's dice mechanism is underspecified.** You define a Success Rate formula (`Bribe/Tuition * 100%`), then say "Success (Dice roll passes)" without defining what's rolled. Is it: roll 1d100 and check ≤ success rate? Roll 1d20 and compare against a converted threshold? This needs an exact formula before it's codeable — right now two people implementing this from your doc would build different games.
+
+2. **Double-jeopardy on failed steal isn't flagged as risky.** On failure, the player loses the entire bribe *and* still owes rent. Combined, this could exceed their cash on hand in one landing — does that count as instant bankruptcy check, or do they go into debt first? You have a general bankruptcy rule in section 7, but this is the one mechanic that can hit a player with two costs in a single trigger, so it's worth deciding explicitly whether partial payment / asset liquidation kicks in here.
+
+3. **"Upgrade right" from passing Start is vague.** Does passing Start grant one upgrade token usable on any one owned property, or does it let you upgrade *all* eligible owned properties that turn? This changes the economy significantly — one is linear, the other is closer to exponential snowballing for early leaders.
+
+4. **Extra Credits tile: admin fee timing when board is full.** You say the effect is "nullified" if all Institutes are owned — does the player still pay the admin fee for landing there, or is it a full no-op? Minor, but easy to nail down now.
+
+5. **Retake Exam escape fee vs. no cash.** If a player is stuck and can't afford the 50,000 VND fee and doesn't roll doubles, what happens after 3 turns pass? Auto-released? Stuck indefinitely? You should define what "lose up to 3 turns" resolves to at turn 3.
+
+**Missing category (flagged in my earlier message, worth deciding now, even if the answer is "not included"):**
+
+- **Trading between players** — standard Monopoly has this, your doc doesn't mention it at all. Worth an explicit yes/no rather than an accidental omission.
+- **Tie-breaking on Total Net Worth** at Tempo 64.
+- **Asset liquidation mechanism** — section 7 mentions "assets left to liquidate" for bankruptcy, but nothing defines *how* a player converts a property back to cash (sell to bank at what price? sell to another player?).
+
+**Hidden information / simultaneous decision check** (the thing I flagged would matter for Phase 3 networking):
+Good news — this design has none. Every decision (buy, upgrade, steal, pay) is made by one player in sequence with full public information (bribe amount, grades, cash are presumably all visible). That's the easy case for netcode later — no need to redesign for it.
+
+**One design question, not a bug — the "grade" system doubles as both rent-multiplier and stealable asset.** Worth double-checking you're happy with the incentive this creates: since stealing preserves the *current* grade level, there's a strong incentive to let opponents upgrade a property to A before stealing it, rather than stealing early. That may be intentional (interesting tension) or accidental (could make early-game steals pointless) — just flagging it as an emergent strategy so it's a choice, not a surprise.
+
+Want to resolve these five ambiguities now, or move straight to Phase 1 data structures and treat these as `// TODO` decisions to nail down as you implement?
+
+
+
+**First, what's genuinely strong in the design:**
+
+- The grade system (D→C→B→A) as both a rent multiplier *and* something you can lose to theft is a smart double-use of one stat — it's doing more work than Monopoly's simple house-count, without adding a new resource type. That's efficient design.
+- Exam Season (Tempo 13-16 bonus payouts) is a good pacing device — it gives the game rhythm (build up → cash in) instead of Monopoly's flat, undifferentiated grind toward bankruptcy. This alone could make games feel less draggy than original Monopoly, which is a real, known weakness of the source material.
+- Tying win condition to Net Worth at a fixed turn count (Tempo 64) instead of "last player standing" is a meaningful improvement — original Monopoly can run forever with two stubborn players; yours can't. That's not a small thing, that's fixing a genuine flaw in the source game.
+
+**Now the core concern — mapping the two old mechanics:**
+
+You're right to feel uneasy, and here's precisely why: **"pay rent" and "buy from the owner at a higher price" are two structurally different mechanics in real Monopoly, but your Proxy Test-Taker fuses them into one gambled outcome.** That fusion isn't wrong, but it's worth being deliberate about, because right now it's doing double duty:
+
+- Original Monopoly: rent is *guaranteed and deterministic*. Buying someone else's property isn't even a core rule — it only happens through voluntary trading (both players must agree, negotiated freely).
+- Your game: landing on an owned tile gives you a *choice* — pay guaranteed rent, or gamble to steal. That's actually more interesting than Monopoly's version, because Monopoly's trading is optional and rarely used by casual players. You've made "trying to take someone's property" a core, repeatable action instead of a rare negotiated event. That's a genuine design upgrade, not just a reskin.
+
+The unease you're feeling is probably about **variance, not concept.** A gambled steal-or-pay-double-penalty mechanic swings games much harder than flat rent. Here are three ways to tune that, pick based on what kind of game you want:
+
+**Option A — Keep it as a single risk mechanic (current design), but cap the downside.**
+Keep Proxy Test-Taker as is, but change the failure penalty so it's *either* lose the bribe *or* pay rent — not both. Stacking both costs on failure is what makes it swingy enough to bankrupt someone in one bad roll. This is the smallest change and preserves your existing math.
+
+**Option B — Split it into two separate, clearer actions.**
+- *Study Material Fee (Rent)* stays exactly as you have it — deterministic, clean, always happens if you don't attempt a steal.
+- *Proxy Test-Taker* becomes a genuinely separate, deliberate action a player can choose to attempt only when they have enough spare cash to survive failure — maybe restricted to once per Tempo, or with a cooldown, so it's a strategic tool rather than something rolled into every single landing. This keeps rent as your safe, predictable baseline (so the economy doesn't spiral from variance) while the steal mechanic becomes a spikier, opt-in power play — closer to how trading works in real Monopoly (rare, deliberate, high-stakes) rather than a coin-flip you face constantly.
+
+**Option C — Make success scale continuously instead of pass/fail.**
+Instead of a binary dice check, let the bribe amount buy a *partial* stake — e.g., paying 50% of tuition as bribe gives you 50% ownership of future rent from that tile (shared income) rather than all-or-nothing theft. This removes gambling swinginess entirely and turns it into a pure economic decision, at the cost of losing the fun "heist" feeling successful steals currently have.
+
+My honest read: **Option B is probably your best fit** — it keeps the fun gambling flavor for players who want to be aggressive, but stops rent (your economy's backbone) from being entangled with a coin flip, which is likely the actual source of your unease. Want me to help spec out exact numbers (bribe-to-success-rate curve, cooldown length) for whichever option you lean toward?

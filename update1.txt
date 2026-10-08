@@ -1,0 +1,34 @@
+**HUST Monopoly - Custom Game Design Document (Phase 0 Updates)**
+
+Here are the finalized mechanics regarding property interaction, upgrades, and edge cases to complete our Phase 0 spec:
+
+**1. Landing on an Opponent's Tile (The Forked Decision)**
+When Player A lands on an Institute owned by Player B, A must choose one of two mutually exclusive actions:
+
+* **Action 1: Pay Rent (Safe Route):** Player A pays the standard "Study Material Fee" (Rent) corresponding to Player B's current grade. The turn ends.
+* **Action 2: Proxy Test-Taker (High Risk / Steal):** Player A refuses to pay rent immediately and attempts a hostile takeover.
+* Player A wagers a "Bribe Amount".
+* The system calculates the success rate: `(Bribe Amount / Original Tile Price) * 100%`.
+* The game generates a **Spin Wheel** with the winning area matching this exact percentage, and spins it once.
+* *If the wheel lands on WIN:* Player A loses the wagered Bribe Amount to the bank/ether, successfully steals the Institute from B, and keeps its current grade level. Player B loses the property entirely.
+* *If the wheel lands on LOSE:* Player A is caught cheating. Player A loses the entire Bribe Amount AND is forced to pay the original "Study Material Fee" (Rent) to Player B.
+
+
+
+**2. Upgrading Grades & Teleportation (The Special Corner Tile)**
+
+* **Passing "Start" Tile:** Players only receive their standard fixed salary/scholarship. Passing Start does **not** grant any right to upgrade a property.
+* **Special Corner Tile ("Academic Affairs Office"):** Located at a strategic corner of the board. When landing on this tile, the player pays a small administrative fee and is instantly teleported to either:
+* **Any unowned Institute** on the board, allowing them to register (buy it at grade D).
+* **Any Institute they already own**, allowing them to study and improve their grade (upgrade from D -> C -> B -> A).
+* *Design intent:* This heavily nerfs the "snowball effect." Leading players cannot auto-upgrade properties just by completing laps around the board; they must intentionally land on their own tiles or this specific Special Tile to level up.
+
+
+
+**3. Edge Cases & Resolutions (Finalized)**
+
+* **Stuck in "Retake Exam" (Jail):** A player loses up to 3 turns. If they fail to roll doubles by their 3rd turn in the room, the system **forces** them to pay the 50,000 VND retake fee to escape and proceed with their turn.
+* **Debt Crisis & Liquidation (Bankruptcy):** If a player lacks the cash to pay a penalty or rent, they must liquidate ("Sell Off") their owned Institutes back to the Bank.
+* Properties are sold to the Bank at exactly **50% of their total invested value** (Base purchase price + all upgrade costs).
+* Liquidated tiles instantly revert to the "Unowned/Empty" state, making them available for others to buy.
+* The player must continue selling off properties until the debt is cleared. If a player sells all their assets and still cannot clear the debt, they are "Expelled" (bankrupt/eliminated from the game).
