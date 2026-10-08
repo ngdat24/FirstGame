@@ -1,0 +1,69 @@
+**HUST Monopoly - Custom Game Design Document (Phase 0)**
+
+**1. Board Structure & Property Identity**
+
+* **The Board:** 40 tiles representing the campus map of Hanoi University of Science and Technology (HUST).
+* **Properties:** Instead of standard streets, properties are **Institutes/Schools/Workshops** (e.g., School of Applied Mathematics and Informatics, School of Engineering Physics, Mechanical Workshop).
+* **Core Value:** Each Institute represents a specific academic subject. Owning a tile means you hold the academic record (grade) for that subject.
+
+**2. Learning & Upgrading Mechanics (Replaces Buying & Building)**
+
+* **Course Registration (Buying Property):**
+* *Trigger:* Landing on an unowned Institute tile.
+* *Effect:* Pay "Tuition" to the Bank to register for the course. You immediately pass with a **"D" grade** and become the owner of the tile.
+
+
+* **Upgrading Grades (Building Houses/Hotels):**
+* *Trigger:* Passing the "Start" tile (collecting standard salary + upgrade right) OR landing on your own Institute again.
+* *Effect:* Pay an "Improvement Fee" to upgrade your grade linearly: **D -> C -> B -> A**.
+* *Edge case:* "A" is the maximum grade (Valedictorian level). The rent/value of the tile scales significantly with each grade upgrade.
+
+
+
+**3. Rent Mechanics: Buying Study Materials**
+
+* **Trigger:** Landing on an Institute owned by another player.
+* **Effect:** You are overwhelmed by the coursework and must pay a "Study Material / Tutoring Fee" (Rent) to the owner.
+* **Scale:** The fee is directly proportional to the owner's grade (An "A" grade charges exorbitant rent, while a "D" grade is cheap).
+
+**4. Stealing Mechanism: Hiring a "Proxy Test-Taker" (Thi hộ)**
+
+* **Trigger:** When landing on an owned Institute, instead of just paying the rent, the player can choose to risk their money to hire the owner as a "Proxy Test-Taker" to steal their grade.
+* **Effect:** The stealing player wagers a "Bribe Amount".
+* *Success Rate:* `(Bribe Amount / Original Course Tuition) * 100%`.
+* *Success (Dice roll passes):* The player successfully steals the academic record, becoming the new owner of the Institute while keeping its current grade level. The previous owner loses the property entirely.
+* *Failure (Caught by proctor):* The player loses the entire Bribe Amount to the ether/bank AND must still pay the original "Study Material Fee" (Rent) to the owner.
+
+
+* **Edge cases:** Wagering 100% of the property's original price guarantees a 100% success rate (acts as a standard buyout). Players cannot take Bank loans to fund a proxy attempt; it must be paid in cash.
+
+**5. Special Tiles**
+
+* **"Extra Credits" Tile (Thêm tín chỉ):**
+* *Trigger:* Landing on this specific tile.
+* *Effect:* Pay a small admin fee to instantly teleport to **any unowned Institute** on the board and purchase it immediately.
+* *Edge case:* If all Institutes are owned, the effect is nullified. Teleporting via this tile does NOT trigger the "Pass Start" bonus.
+
+
+* **"Retake Exam" Tile (Jail):**
+* *Trigger:* Landing on "Academic Warning", drawing a bad luck card, or rolling doubles 3 times in a row.
+* *Effect:* Move directly to the "Retake Exam" room (Jail). Lose up to 3 turns. To escape, the player must roll doubles on their turn OR pay a 50,000 VND "Retake Fee".
+* *Edge case:* Players CAN still collect "Study Material Fees" (Rent) from others while stuck in the Retake Exam room.
+
+
+
+**6. Game Pacing (Tempos & Exam Season)**
+
+* **Tempo Definition:** 1 Tempo = 1 full game round (all 4 players have finished their turns). 1 Tempo represents 1 in-game week.
+* **Semester Structure:** 1 Semester = 16 Tempos (12 study weeks + 4 exam weeks).
+* **Exam Season (Reward Phase):**
+* *Trigger:* Occurs from Tempo 13 to Tempo 16 of every Semester.
+* *Effect:* The Bank distributes "Scholarships / TA Salaries". Players holding high-grade Institutes (e.g., only grades B and A qualify) automatically receive bonus money from the Bank at the start of each of these 4 Tempos.
+
+
+
+**7. Win State & End Game Conditions**
+
+* **Timeline:** The game lasts exactly 4 academic years, which equals 8 Semesters = **64 Tempos**. When Tempo 64 concludes, the game immediately ends.
+* **Winning:** The system calculates the "Total Net Worth" (Current Cash + Original Base Value of all owned Institutes + Total Cost of all Grade Upgrades). The player with the highest Total Net Worth becomes the Valedictorian and wins.
+* **Bankruptcy (Expulsion):** If a player runs out of cash and has no assets left to liquidate before Tempo 64, they are "Expelled" (eliminated). The remaining players continue until Tempo 64.
