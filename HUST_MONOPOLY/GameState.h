@@ -51,6 +51,9 @@ struct GameState {
 
   int currentTempo = 1;
   int currentPlayerIndex = 0;
+  // Who starts each tempo. makeNewGame() picks it at random so that nobody owns the
+  // first-mover advantage; a tempo ends when the turn comes back to this seat.
+  int firstPlayerIndex = 0;
   Phase phase = Phase::AwaitRoll;
   int pendingTileId = -1;
   PendingDebt debt;

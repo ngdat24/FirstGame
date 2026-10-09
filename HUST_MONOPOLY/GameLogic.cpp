@@ -93,12 +93,13 @@ void nextTurn(GameState& s) {
   const int n = static_cast<int>(s.players.size());
   int idx = s.currentPlayerIndex;
   for (;;) {
-    const int prev = idx;
+    bool crossedStart = false;  // did we step onto the tempo's first seat?
     do {
       idx = (idx + 1) % n;
+      if (idx == s.firstPlayerIndex) crossedStart = true;  // even if that player is expelled
     } while (s.players[idx].isBankrupt);
 
-    if (idx <= prev) {  // wrapped around: every living player has played this tempo
+    if (crossedStart) {  // back at the first seat: every living player has played this tempo
       if (s.currentTempo >= s.config.maxTempo) {
         s.currentPlayerIndex = idx;
         endGame(s);
@@ -217,19 +218,22 @@ int gradeWeight(Grade g) {  // used by the "per property" card: D=1, C=2, B=4, A
   }
 }
 
-// Alive player with the lowest net worth (ties: lowest id), or -1.
-int poorestAliveId(const GameState& s) {
-  int best = -1;
+// Alive player with the lowest net worth, or -1. Ties are broken at random: always
+// picking the lowest id would hand seat 1 free subsidies (everyone starts tied).
+int poorestAliveId(GameState& s) {
+  std::vector<int> tied;
   long long bestWorth = LLONG_MAX;
   for (const Player& q : s.players) {
     if (q.isBankrupt) continue;
     const long long w = calculateNetWorth(s, q);
     if (w < bestWorth) {
       bestWorth = w;
-      best = q.id;
+      tied.clear();
     }
+    if (w == bestWorth) tied.push_back(q.id);
   }
-  return best;
+  if (tied.empty()) return -1;
+  return tied[s.deckRng() % tied.size()];
 }
 
 // Rolls are halved only when the player actually moves, so a failed roll in
@@ -458,6 +462,9 @@ GameState makeNewGame(int numPlayers, const std::vector<Tile>& board, unsigned s
     p.cash = s.config.startCash;
     s.players.push_back(p);
   }
+  if (numPlayers > 0)  // random first player (same seed -> same game)
+    s.firstPlayerIndex = s.currentPlayerIndex =
+        static_cast<int>(s.deckRng() % static_cast<unsigned>(numPlayers));
   return s;
 }
 

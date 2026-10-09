@@ -4,6 +4,8 @@
 //   ./sim --games 5000 --seed 7
 //   ./sim --verbose --seed 3   -> print the full event log of ONE game
 //   ./sim --nocards            -> same game with the card tiles switched off (A/B test)
+//   ./sim --fuzz               -> also throw garbage actions at the engine; rejected ones must
+//                                 never change the state
 //   ./sim --salary 20000 --cash 400000 --rentx 3   -> try a harsher economy
 //   ./sim --flatrent --exambonus 0 --stealprob 0.4  -> experiment flags
 #include <algorithm>
@@ -93,6 +95,49 @@ Action botChoose(const GameState& s, std::mt19937& rng) {
   }
 }
 
+// ---- Fuzzing: throw garbage at applyAction -------------------------------------------------
+unsigned long long mixHash(unsigned long long h, long long v) {
+  return h ^ (static_cast<unsigned long long>(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2));
+}
+
+// Fingerprint of every rule-relevant field (not the rng engines or the log).
+unsigned long long stateDigest(const GameState& s) {
+  unsigned long long h = 1469598103934665603ULL;
+  h = mixHash(h, s.currentTempo);
+  h = mixHash(h, s.currentPlayerIndex);
+  h = mixHash(h, s.firstPlayerIndex);
+  h = mixHash(h, static_cast<int>(s.phase));
+  h = mixHash(h, s.pendingTileId);
+  h = mixHash(h, s.debt.amount);
+  h = mixHash(h, s.debt.creditorId);
+  h = mixHash(h, s.debt.moveSteps);
+  h = mixHash(h, s.winnerId);
+  h = mixHash(h, s.rentFreeTurnsLeft);
+  h = mixHash(h, s.lastDice.first);
+  h = mixHash(h, s.lastDice.second);
+  for (const Player& p : s.players) {
+    h = mixHash(h, p.cash);
+    h = mixHash(h, p.position);
+    h = mixHash(h, p.turnsInJail);
+    h = mixHash(h, p.consecutiveDoubles);
+    h = mixHash(h, p.isBankrupt);
+    h = mixHash(h, p.skipTurns);
+    h = mixHash(h, p.halveNextDice);
+    h = mixHash(h, p.stealBonusPercent);
+    for (int id : p.ownedTileIds) h = mixHash(h, id);
+    h = mixHash(h, -1);
+  }
+  for (const Tile& t : s.tiles) {
+    h = mixHash(h, t.ownerId);
+    h = mixHash(h, static_cast<int>(t.grade));
+    h = mixHash(h, t.totalInvested);
+  }
+  for (int i : s.deck.drawPile) h = mixHash(h, i);
+  h = mixHash(h, -2);
+  for (int i : s.deck.discardPile) h = mixHash(h, i);
+  return h;
+}
+
 // Returns "" if the state is consistent, otherwise a description of the problem.
 std::string checkInvariants(const GameState& s) {
   const int nTiles = static_cast<int>(s.tiles.size());
@@ -143,11 +188,42 @@ struct Stats {
   long long totalExpelled = 0;
   double winnerWorthSum = 0;
   std::array<int, 4> winsBySeat{};
+  std::array<int, 4> winsByTurnOrder{};  // 0 = the player who went first
+  long long fuzzRejected = 0;
+  long long fuzzAccepted = 0;
+  long long fuzzMutations = 0;  // a REJECTED action that still changed the state (must be 0)
   int midgameGames = 0;       // games still running when Tempo 33 starts
   int midgameLeaderWon = 0;   // ...where the Tempo-32 net-worth leader won
 };
 
 }  // namespace
+
+// Fires one random, mostly-nonsense action (wrong player, wrong phase, negative or huge
+// amounts, out-of-range tile ids). A rejected action must leave the state bit-for-bit
+// unchanged; an accepted one (it can happen by chance) must keep the state consistent.
+void injectGarbage(GameState& state, std::mt19937& rng, Stats& st, bool checkEveryStep) {
+  const int kActionTypes = 10;  // RollDice .. SellTile
+  Action g;
+  g.type = static_cast<ActionType>(rng() % kActionTypes);
+  g.playerId = static_cast<int>(rng() % 7) - 1;               // -1 .. 5
+  g.amount = static_cast<long long>(rng() % 3000000) - 1000000;  // negative .. huge
+  g.tileId = static_cast<int>(rng() % 48) - 4;                // -4 .. 43
+  const unsigned long long before = stateDigest(state);
+  const bool ok = applyAction(state, g, rng);
+  if (ok) {
+    ++st.fuzzAccepted;
+  } else {
+    ++st.fuzzRejected;
+    if (stateDigest(state) != before) ++st.fuzzMutations;
+  }
+  if (checkEveryStep) {
+    const std::string problem = checkInvariants(state);
+    if (!problem.empty()) {
+      ++st.invariantFailures;
+      std::cout << "INVARIANT FAILED after garbage action: " << problem << "\n";
+    }
+  }
+}
 
 int main(int argc, char** argv) {
   int games = 1000;
@@ -157,6 +233,7 @@ int main(int argc, char** argv) {
   long long cashOverride = -1;
   int rentMultiplier = 1;
   bool cardsEnabled = true;     // --nocards turns the card tiles into no-ops
+  bool fuzz = false;
   bool flatRent = false;        // rent factors 1,2,3,4 instead of 1,2,4,8
   double examBonusScale = 1.0;  // 0 disables Exam Season bonuses
   for (int i = 1; i < argc; ++i) {
@@ -169,6 +246,7 @@ int main(int argc, char** argv) {
     else if (arg == "--rentx" && i + 1 < argc) rentMultiplier = std::atoi(argv[++i]);
     else if (arg == "--flatrent") flatRent = true;
     else if (arg == "--nocards") cardsEnabled = false;
+    else if (arg == "--fuzz") fuzz = true;
     else if (arg == "--exambonus" && i + 1 < argc) examBonusScale = std::atof(argv[++i]);
     else if (arg == "--stealprob" && i + 1 < argc) g_stealChance = std::atof(argv[++i]);
   }
@@ -197,6 +275,10 @@ int main(int argc, char** argv) {
     long long actions = 0;
     int midLeader = -1;  // net-worth leader at the end of Tempo 32
     while (state.phase != Phase::GameOver && actions < kActionCap) {
+      if (fuzz) {
+        injectGarbage(state, rng, st, games <= 2000);
+        if (state.phase == Phase::GameOver) break;
+      }
       const Action a = botChoose(state, rng);
       if (!applyAction(state, a, rng)) {
         ++st.illegalActions;
@@ -241,6 +323,7 @@ int main(int argc, char** argv) {
     }
     if (state.winnerId >= 0) {
       ++st.winsBySeat[state.winnerId];
+      ++st.winsByTurnOrder[(state.winnerId - state.firstPlayerIndex + kPlayers) % kPlayers];
       st.winnerWorthSum += static_cast<double>(calculateNetWorth(state, state.players[state.winnerId]));
     }
   }
@@ -264,6 +347,14 @@ int main(int argc, char** argv) {
   std::cout << "Win rate by seat:       ";
   for (int i = 0; i < kPlayers; ++i)
     std::cout << "P" << (i + 1) << " " << 100.0 * st.winsBySeat[i] / n << "%  ";
+  std::cout << "\nWin rate by turn order: ";
+  for (int i = 0; i < kPlayers; ++i)
+    std::cout << (i + 1) << (i == 0 ? "st " : i == 1 ? "nd " : i == 2 ? "rd " : "th ")
+              << 100.0 * st.winsByTurnOrder[i] / n << "%  ";
   std::cout << "\n";
-  return (st.illegalActions || st.invariantFailures || st.hitActionCap) ? 1 : 0;
+  if (fuzz) {
+    std::cout << "Fuzz: garbage actions rejected " << st.fuzzRejected << ", accepted by chance "
+              << st.fuzzAccepted << ", rejected-but-changed-state " << st.fuzzMutations << "\n";
+  }
+  return (st.illegalActions || st.invariantFailures || st.hitActionCap || st.fuzzMutations) ? 1 : 0;
 }

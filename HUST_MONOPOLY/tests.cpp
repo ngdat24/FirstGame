@@ -28,7 +28,12 @@ static Action act(ActionType type, int playerId, long long amount = 0, int tileI
   return a;
 }
 
-static GameState fresh() { return makeNewGame(4, makeBoard()); }
+// makeNewGame() starts at a random seat; tests want player 0 first so scenarios are fixed.
+static GameState fresh() {
+  GameState s = makeNewGame(4, makeBoard());
+  s.firstPlayerIndex = s.currentPlayerIndex = 0;
+  return s;
+}
 
 // Give `ownerId` a tile at the given grade with the given invested value.
 static void giveTile(GameState& s, int tileId, int ownerId, Grade g, int invested) {
@@ -462,6 +467,25 @@ static void testCardPovertySubsidy() {
   CHECK(s.players[0].cash == s.config.startCash);
 }
 
+static void testSubsidyTieIsRandom() {
+  // Everyone starts with the same net worth, so all four are tied as "poorest".
+  int received[4] = {0, 0, 0, 0};
+  for (unsigned seed = 1; seed <= 200; ++seed) {
+    GameState s = makeNewGame(4, makeBoard(), seed);
+    s.firstPlayerIndex = s.currentPlayerIndex = 0;
+    stackDeck(s, findCard(s, CardEffectType::PovertySubsidy));
+    landOnCardTile(s);
+    int winners = 0;
+    for (int i = 0; i < 4; ++i)
+      if (s.players[i].cash == s.config.startCash + 300000) {
+        ++received[i];
+        ++winners;
+      }
+    CHECK(winners == 1);  // exactly one player gets it
+  }
+  for (int i = 0; i < 4; ++i) CHECK(received[i] > 20);  // not always the lowest id
+}
+
 static void testCardJailAndTeleport() {
   GameState j = fresh();
   stackDeck(j, findCard(j, CardEffectType::GoToJail));
@@ -606,6 +630,42 @@ static void testCardsSwitchAndRegularTiles() {
   CHECK(s.players[0].cash == s.config.startCash);
 }
 
+static void testRandomFirstPlayer() {
+  int seen[4] = {0, 0, 0, 0};
+  for (unsigned seed = 1; seed <= 200; ++seed) {
+    GameState s = makeNewGame(4, makeBoard(), seed);
+    CHECK(s.firstPlayerIndex >= 0 && s.firstPlayerIndex < 4);
+    CHECK(s.currentPlayerIndex == s.firstPlayerIndex);
+    if (s.firstPlayerIndex >= 0 && s.firstPlayerIndex < 4) ++seen[s.firstPlayerIndex];
+    GameState t = makeNewGame(4, makeBoard(), seed);
+    CHECK(t.firstPlayerIndex == s.firstPlayerIndex);  // same seed -> same start
+  }
+  for (int i = 0; i < 4; ++i) CHECK(seen[i] > 20);    // every seat starts about 1/4 of the time
+}
+
+static void testTempoBoundaryFollowsFirstPlayer() {
+  std::mt19937 rng(1);
+  GameState s = fresh();
+  s.firstPlayerIndex = s.currentPlayerIndex = 2;
+  playQuietTurn(s, rng);  // player 2
+  playQuietTurn(s, rng);  // player 3
+  CHECK(s.currentPlayerIndex == 0);
+  CHECK(s.currentTempo == 1);  // running off the end of the array is NOT a new tempo
+  playQuietTurn(s, rng);  // player 0
+  playQuietTurn(s, rng);  // player 1
+  CHECK(s.currentPlayerIndex == 2);
+  CHECK(s.currentTempo == 2);  // back at the first seat: tempo 2 begins
+
+  // If the first seat's player has been expelled, the boundary is still counted once.
+  GameState e = fresh();
+  e.firstPlayerIndex = 2;
+  e.currentPlayerIndex = 1;
+  e.players[2].isBankrupt = true;
+  playQuietTurn(e, rng);  // player 1 ends their turn; seat 2 is skipped
+  CHECK(e.currentPlayerIndex == 3);
+  CHECK(e.currentTempo == 2);
+}
+
 int main() {
   testDoublesAndTripleDoublesJail();
   testNonDoubleResetsStreakAndBuy();
@@ -625,12 +685,15 @@ int main() {
   testCardMoney();
   testCardPerProperty();
   testCardPovertySubsidy();
+  testSubsidyTieIsRandom();
   testCardJailAndTeleport();
   testCardSkipTurn();
   testCardHalveDice();
   testCardStealBuff();
   testCardRentHoliday();
   testCardsSwitchAndRegularTiles();
+  testRandomFirstPlayer();
+  testTempoBoundaryFollowsFirstPlayer();
 
   std::cout << (g_total - g_failed) << "/" << g_total << " checks passed\n";
   return g_failed == 0 ? 0 : 1;
