@@ -7,7 +7,7 @@
 
 // Placeholder 40-tile board. Layout:
 //   0 Start | 10 Retake Exam (jail) | 20 Special Corner | 30 Academic Warning
-//   5, 15, 25, 35 = "Other" slots reserved for cards/events later
+//   5, 15, 25, 35 = "Other" tiles: landing on one draws a card (see card_data.h)
 //   everything else = Institute (32 of them)
 // Prices, upgrade costs and rents are PLACEHOLDERS to be tuned by simulation.
 inline std::vector<Tile> makeBoard() {
@@ -38,7 +38,7 @@ inline std::vector<Tile> makeBoard() {
       t.name = "Academic Warning";
     } else if (i % 10 == 5) {
       t.type = TileType::Other;
-      t.name = "Event (placeholder)";
+      t.name = "Chance / Bad Luck (Cơ hội / Vận xui)";
     } else {
       t.type = TileType::Institute;
       t.name = (instituteIndex < 3) ? kNamed[instituteIndex]

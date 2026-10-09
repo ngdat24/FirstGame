@@ -1,7 +1,10 @@
 #include "GameLogic.h"
 
 #include <algorithm>
+#include <climits>
 #include <string>
+
+#include "card_data.h"
 
 namespace {
 
@@ -85,28 +88,42 @@ void nextTurn(GameState& s) {
     endGame(s);
     return;
   }
+  if (s.rentFreeTurnsLeft > 0) --s.rentFreeTurnsLeft;
+
   const int n = static_cast<int>(s.players.size());
-  const int old = s.currentPlayerIndex;
-  int idx = old;
-  do {
-    idx = (idx + 1) % n;
-  } while (s.players[idx].isBankrupt);
+  int idx = s.currentPlayerIndex;
+  for (;;) {
+    const int prev = idx;
+    do {
+      idx = (idx + 1) % n;
+    } while (s.players[idx].isBankrupt);
+
+    if (idx <= prev) {  // wrapped around: every living player has played this tempo
+      if (s.currentTempo >= s.config.maxTempo) {
+        s.currentPlayerIndex = idx;
+        endGame(s);
+        return;
+      }
+      ++s.currentTempo;
+      logEvent(s, "--- Tempo " + std::to_string(s.currentTempo) + " begins ---");
+      examSeasonPayout(s);
+    }
+
+    Player& next = s.players[idx];
+    if (next.skipTurns > 0) {  // a card made them lose this turn: pass over them
+      --next.skipTurns;
+      if (s.rentFreeTurnsLeft > 0) --s.rentFreeTurnsLeft;
+      logEvent(s, next.name + " skips this turn.");
+      continue;
+    }
+    break;
+  }
 
   s.currentPlayerIndex = idx;
   s.phase = Phase::AwaitRoll;
   s.pendingTileId = -1;
   s.debt = PendingDebt{};
   s.players[idx].consecutiveDoubles = 0;
-
-  if (idx <= old) {  // wrapped around: every living player has played this tempo
-    if (s.currentTempo >= s.config.maxTempo) {
-      endGame(s);
-      return;
-    }
-    ++s.currentTempo;
-    logEvent(s, "--- Tempo " + std::to_string(s.currentTempo) + " begins ---");
-    examSeasonPayout(s);
-  }
 }
 
 // Called when the player has finished resolving everything about a roll.
@@ -188,6 +205,128 @@ void chargeOrLiquidate(GameState& s, long long amount, int creditorId, int moveS
 }
 
 // ---------------------------------------------------------------------------
+// Cards
+// ---------------------------------------------------------------------------
+int gradeWeight(Grade g) {  // used by the "per property" card: D=1, C=2, B=4, A=8
+  switch (g) {
+    case Grade::D: return 1;
+    case Grade::C: return 2;
+    case Grade::B: return 4;
+    case Grade::A: return 8;
+    default: return 0;
+  }
+}
+
+// Alive player with the lowest net worth (ties: lowest id), or -1.
+int poorestAliveId(const GameState& s) {
+  int best = -1;
+  long long bestWorth = LLONG_MAX;
+  for (const Player& q : s.players) {
+    if (q.isBankrupt) continue;
+    const long long w = calculateNetWorth(s, q);
+    if (w < bestWorth) {
+      bestWorth = w;
+      best = q.id;
+    }
+  }
+  return best;
+}
+
+// Rolls are halved only when the player actually moves, so a failed roll in
+// the Retake Exam room or a triple-doubles jail does not waste the card.
+int movementSteps(GameState& s, Player& p, int rolled) {
+  if (!p.halveNextDice) return rolled;
+  p.halveNextDice = false;
+  const int halved = std::max(1, rolled / 2);
+  logEvent(s, p.name + "'s move is halved: " + std::to_string(rolled) + " -> " +
+                  std::to_string(halved) + ".");
+  return halved;
+}
+
+// Draws one card for the current player and applies it. Ends with
+// finishLanding / chargeOrLiquidate / moveAndResolve like any other landing.
+void drawAndApplyCard(GameState& s, Player& p) {
+  const int idx = drawCardIndex(s.deck, s.deckRng);
+  if (idx < 0) {
+    finishLanding(s);
+    return;
+  }
+  s.deck.discardPile.push_back(idx);
+  const Card& c = s.deck.cards[idx];  // cards are never resized, so this stays valid
+  logEvent(s, p.name + " draws \"" + c.title + "\": " + c.description);
+
+  switch (c.effectType) {
+    case CardEffectType::MoneyFlat:
+      if (c.value >= 0) {
+        p.cash += c.value;
+        finishLanding(s);
+      } else {
+        chargeOrLiquidate(s, -c.value, -1, 0);
+      }
+      return;
+
+    case CardEffectType::MoneyPerProperty: {
+      long long total = 0;
+      for (int tileId : p.ownedTileIds) total += c.value * gradeWeight(s.tiles[tileId].grade);
+      chargeOrLiquidate(s, total, -1, 0);  // a total of 0 settles instantly
+      return;
+    }
+
+    case CardEffectType::PovertySubsidy: {
+      const int poorest = poorestAliveId(s);
+      if (poorest >= 0) {
+        s.players[poorest].cash += c.value;
+        logEvent(s, s.players[poorest].name + " receives the subsidy of " +
+                        std::to_string(c.value) + ".");
+      }
+      finishLanding(s);
+      return;
+    }
+
+    case CardEffectType::GoToJail:
+      sendToRetakeExam(s, p);
+      finishLanding(s);  // consecutiveDoubles was reset, so the turn ends
+      return;
+
+    case CardEffectType::TeleportTile: {
+      const int n = static_cast<int>(s.tiles.size());
+      const int target = static_cast<int>(c.value);
+      if (target < 0 || target >= n) {
+        finishLanding(s);
+        return;
+      }
+      // Forward move: wrapping past Start pays the salary, as with normal moves.
+      const int steps = ((target - p.position) % n + n) % n;
+      if (steps == 0) finishLanding(s);
+      else moveAndResolve(s, p, steps);  // never point this at another Other tile
+      return;
+    }
+
+    case CardEffectType::SkipTurn:
+      p.skipTurns += 1;
+      p.consecutiveDoubles = 0;  // no bonus roll either
+      finishLanding(s);
+      return;
+
+    case CardEffectType::HalveNextDice:
+      p.halveNextDice = true;
+      finishLanding(s);
+      return;
+
+    case CardEffectType::StealBuff:
+      p.stealBonusPercent = std::max(p.stealBonusPercent, static_cast<int>(c.value));
+      finishLanding(s);
+      return;
+
+    case CardEffectType::RentHoliday:
+      s.rentFreeTurnsLeft = countAlivePlayers(s);  // lasts until it is this player's turn again
+      finishLanding(s);
+      return;
+  }
+  finishLanding(s);
+}
+
+// ---------------------------------------------------------------------------
 // Per-phase action handlers
 // ---------------------------------------------------------------------------
 bool handleRollPhase(GameState& s, Player& p, const Action& a, std::mt19937& rng) {
@@ -229,6 +368,11 @@ bool handleLandingChoice(GameState& s, Player& p, const Action& a, std::mt19937&
       return true;
     case ActionType::PayRent:
       if (!opponents) return false;
+      if (s.rentFreeTurnsLeft > 0) {  // Rent Holiday card is active
+        logEvent(s, p.name + " owes no rent on " + t.name + " (Rent Holiday).");
+        finishLanding(s);
+        return true;
+      }
       chargeOrLiquidate(s, rentFor(s, t), t.ownerId, 0);
       return true;
     case ActionType::AttemptSteal:
@@ -302,9 +446,11 @@ bool handleLiquidation(GameState& s, Player& p, const Action& a) {
 // ===========================================================================
 // Public API
 // ===========================================================================
-GameState makeNewGame(int numPlayers, const std::vector<Tile>& board) {
+GameState makeNewGame(int numPlayers, const std::vector<Tile>& board, unsigned seed) {
   GameState s;
   s.tiles = board;
+  s.deck = makeCardDeck();
+  s.deckRng.seed(seed);
   for (int i = 0; i < numPlayers; ++i) {
     Player p;
     p.id = i;
@@ -313,6 +459,26 @@ GameState makeNewGame(int numPlayers, const std::vector<Tile>& board) {
     s.players.push_back(p);
   }
   return s;
+}
+
+int drawCardIndex(CardDeck& d, std::mt19937& rng) {
+  if (d.cards.empty()) return -1;
+  if (d.drawPile.empty()) {
+    if (!d.discardPile.empty()) {
+      d.drawPile.swap(d.discardPile);  // reshuffle what was already played
+    } else {
+      for (int i = 0; i < static_cast<int>(d.cards.size()); ++i) d.drawPile.push_back(i);
+    }
+    // Fisher-Yates with an explicit modulo, so the order does not depend on how
+    // a particular standard library implements its distributions.
+    for (int i = static_cast<int>(d.drawPile.size()) - 1; i > 0; --i) {
+      const int j = static_cast<int>(rng() % static_cast<unsigned>(i + 1));
+      std::swap(d.drawPile[i], d.drawPile[j]);
+    }
+  }
+  const int idx = d.drawPile.back();
+  d.drawPile.pop_back();
+  return idx;
 }
 
 std::pair<int, int> rollDice(std::mt19937& rng) {
@@ -365,8 +531,14 @@ bool upgradeTile(GameState& s, Player& p, Tile& t) {
 bool attemptSteal(GameState& s, Player& p, Tile& t, long long bribe, std::mt19937& rng) {
   // Success chance = bribe / total invested value of the tile, capped at 100%.
   double rate = 1.0;
-  if (t.totalInvested > 0)
-    rate = std::min(1.0, static_cast<double>(bribe) / t.totalInvested);
+  if (t.totalInvested > 0) rate = static_cast<double>(bribe) / t.totalInvested;
+  if (p.stealBonusPercent > 0) {  // "Phao thi" card: one-shot bonus, used up either way
+    rate += p.stealBonusPercent / 100.0;
+    logEvent(s, p.name + " uses a +" + std::to_string(p.stealBonusPercent) +
+                    "% steal bonus.");
+    p.stealBonusPercent = 0;
+  }
+  rate = std::min(1.0, rate);
 
   p.cash -= bribe;  // the bribe is spent whether or not the steal works
   std::uniform_real_distribution<double> unit(0.0, 1.0);
@@ -437,7 +609,12 @@ void resolveLanding(GameState& s, Player& p, Tile& t) {
       }
       return;
 
-    default:  // Start, RetakeExam (just visiting), Other
+    case TileType::Other:  // card tile
+      if (s.config.cardsEnabled && !s.deck.cards.empty()) drawAndApplyCard(s, p);
+      else finishLanding(s);
+      return;
+
+    default:  // Start, RetakeExam (just visiting)
       finishLanding(s);
       return;
   }
@@ -491,12 +668,12 @@ bool applyRoll(GameState& s, int d1, int d2) {
       p.turnsInJail = 0;
       p.consecutiveDoubles = 0;  // escaping with doubles gives no extra roll
       logEvent(s, p.name + " rolled doubles and escapes the Retake Exam room.");
-      moveAndResolve(s, p, steps);
+      moveAndResolve(s, p, movementSteps(s, p, steps));
     } else {
       --p.turnsInJail;
       if (p.turnsInJail == 0) {
         logEvent(s, p.name + " failed the retake 3 times: forced to pay the fee.");
-        chargeOrLiquidate(s, s.config.retakeFee, -1, steps);  // then moves
+        chargeOrLiquidate(s, s.config.retakeFee, -1, movementSteps(s, p, steps));  // then moves
       } else {
         nextTurn(s);
       }
@@ -517,7 +694,7 @@ bool applyRoll(GameState& s, int d1, int d2) {
   } else {
     p.consecutiveDoubles = 0;
   }
-  moveAndResolve(s, p, steps);
+  moveAndResolve(s, p, movementSteps(s, p, steps));
   return true;
 }
 
