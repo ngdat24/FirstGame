@@ -3,7 +3,9 @@
 //   ./sim                      -> 1000 games, seed 12345
 //   ./sim --games 5000 --seed 7
 //   ./sim --verbose --seed 3   -> print the full event log of ONE game
+//   ./sim --nocards            -> same game with the card tiles switched off (A/B test)
 //   ./sim --salary 20000 --cash 400000 --rentx 3   -> try a harsher economy
+//   ./sim --flatrent --exambonus 0 --stealprob 0.4  -> experiment flags
 #include <algorithm>
 #include <array>
 #include <cstdlib>
@@ -16,6 +18,8 @@
 #include "board_data.h"
 
 namespace {
+
+double g_stealChance = 0.15;  // how often the bot tries to steal instead of paying rent
 
 bool chance(std::mt19937& rng, double p) {
   return std::uniform_real_distribution<double>(0.0, 1.0)(rng) < p;
@@ -46,7 +50,7 @@ Action botChoose(const GameState& s, std::mt19937& rng) {
         a.type = (p.cash - t.upgradeCost >= reserve) ? ActionType::Upgrade : ActionType::Decline;
       } else {
         const long long bribe = t.totalInvested / 2;  // ~50% success chance
-        if (bribe > 0 && p.cash - bribe >= reserve && chance(rng, 0.15)) {
+        if (bribe > 0 && p.cash - bribe >= reserve && chance(rng, g_stealChance)) {
           a.type = ActionType::AttemptSteal;
           a.amount = bribe;
         } else {
@@ -111,9 +115,20 @@ std::string checkInvariants(const GameState& s) {
     if (p.cash < 0) return p.name + " has negative cash";
     if (p.position < 0 || p.position >= nTiles) return p.name + " has invalid position";
     if (p.isBankrupt && !p.ownedTileIds.empty()) return p.name + " expelled but owns tiles";
+    if (p.skipTurns < 0 || p.stealBonusPercent < 0 || p.stealBonusPercent > 100)
+      return p.name + " has an invalid status effect";
     for (int id : p.ownedTileIds)
       if (s.tiles[id].ownerId != p.id) return p.name + " lists a tile it does not own";
   }
+  // Card deck: every card index appears at most once across the two piles.
+  std::vector<int> seen(s.deck.cards.size(), 0);
+  for (int i : s.deck.drawPile) {
+    if (i < 0 || i >= static_cast<int>(seen.size()) || ++seen[i] > 1) return "deck draw pile is corrupt";
+  }
+  for (int i : s.deck.discardPile) {
+    if (i < 0 || i >= static_cast<int>(seen.size()) || ++seen[i] > 1) return "deck discard pile is corrupt";
+  }
+  if (s.rentFreeTurnsLeft < 0) return "negative rent holiday counter";
   return "";
 }
 
@@ -128,6 +143,8 @@ struct Stats {
   long long totalExpelled = 0;
   double winnerWorthSum = 0;
   std::array<int, 4> winsBySeat{};
+  int midgameGames = 0;       // games still running when Tempo 33 starts
+  int midgameLeaderWon = 0;   // ...where the Tempo-32 net-worth leader won
 };
 
 }  // namespace
@@ -139,6 +156,9 @@ int main(int argc, char** argv) {
   long long salaryOverride = -1;  // -1 = keep the default from GameConfig
   long long cashOverride = -1;
   int rentMultiplier = 1;
+  bool cardsEnabled = true;     // --nocards turns the card tiles into no-ops
+  bool flatRent = false;        // rent factors 1,2,3,4 instead of 1,2,4,8
+  double examBonusScale = 1.0;  // 0 disables Exam Season bonuses
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--games" && i + 1 < argc) games = std::atoi(argv[++i]);
@@ -147,6 +167,10 @@ int main(int argc, char** argv) {
     else if (arg == "--salary" && i + 1 < argc) salaryOverride = std::atoll(argv[++i]);
     else if (arg == "--cash" && i + 1 < argc) cashOverride = std::atoll(argv[++i]);
     else if (arg == "--rentx" && i + 1 < argc) rentMultiplier = std::atoi(argv[++i]);
+    else if (arg == "--flatrent") flatRent = true;
+    else if (arg == "--nocards") cardsEnabled = false;
+    else if (arg == "--exambonus" && i + 1 < argc) examBonusScale = std::atof(argv[++i]);
+    else if (arg == "--stealprob" && i + 1 < argc) g_stealChance = std::atof(argv[++i]);
   }
   if (verbose) games = 1;
 
@@ -156,14 +180,22 @@ int main(int argc, char** argv) {
 
   for (int g = 0; g < games; ++g) {
     std::mt19937 rng(seed + static_cast<unsigned>(g));
-    GameState state = makeNewGame(kPlayers, makeBoard());
+    GameState state = makeNewGame(kPlayers, makeBoard(), seed + static_cast<unsigned>(g));
     state.logEnabled = verbose;
+    state.config.cardsEnabled = cardsEnabled;
     if (salaryOverride >= 0) state.config.salary = salaryOverride;
     if (cashOverride >= 0)
       for (Player& p : state.players) p.cash = cashOverride;
+    if (flatRent) {
+      const int flat[5] = {0, 1, 2, 3, 4};
+      for (int i = 0; i < 5; ++i) state.config.rentFactor[i] = flat[i];
+    }
     for (int& f : state.config.rentFactor) f *= rentMultiplier;
+    state.config.examBonusA = static_cast<long long>(state.config.examBonusA * examBonusScale);
+    state.config.examBonusB = static_cast<long long>(state.config.examBonusB * examBonusScale);
 
     long long actions = 0;
+    int midLeader = -1;  // net-worth leader at the end of Tempo 32
     while (state.phase != Phase::GameOver && actions < kActionCap) {
       const Action a = botChoose(state, rng);
       if (!applyAction(state, a, rng)) {
@@ -172,6 +204,14 @@ int main(int argc, char** argv) {
         break;
       }
       ++actions;
+      if (midLeader < 0 && state.currentTempo >= 33 && state.phase != Phase::GameOver) {
+        long long best = -1;
+        for (const Player& p : state.players) {
+          if (p.isBankrupt) continue;
+          const long long w = calculateNetWorth(state, p);
+          if (w > best) { best = w; midLeader = p.id; }
+        }
+      }
       if (verbose) {
         for (const std::string& line : state.eventLog) std::cout << line << "\n";
         state.eventLog.clear();
@@ -195,6 +235,10 @@ int main(int argc, char** argv) {
     st.totalTempos += state.currentTempo;
     st.totalExpelled += kPlayers - countAlivePlayers(state);
     if (state.currentTempo < state.config.maxTempo) ++st.endedEarly;
+    if (midLeader >= 0 && state.winnerId >= 0) {
+      ++st.midgameGames;
+      if (state.winnerId == midLeader) ++st.midgameLeaderWon;
+    }
     if (state.winnerId >= 0) {
       ++st.winsBySeat[state.winnerId];
       st.winnerWorthSum += static_cast<double>(calculateNetWorth(state, state.players[state.winnerId]));
@@ -214,6 +258,9 @@ int main(int argc, char** argv) {
   std::cout << "Avg players expelled:   " << st.totalExpelled / n << " / " << kPlayers << "\n";
   std::cout << "Ended before tempo 64:  " << 100.0 * st.endedEarly / n << "%\n";
   std::cout << "Avg winner net worth:   " << st.winnerWorthSum / n << "\n";
+  if (st.midgameGames > 0)
+    std::cout << "Midgame leader wins:    " << 100.0 * st.midgameLeaderWon / st.midgameGames
+              << "%  (of " << st.midgameGames << " games reaching Tempo 33)\n";
   std::cout << "Win rate by seat:       ";
   for (int i = 0; i < kPlayers; ++i)
     std::cout << "P" << (i + 1) << " " << 100.0 * st.winsBySeat[i] / n << "%  ";

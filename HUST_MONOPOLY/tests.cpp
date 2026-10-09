@@ -81,7 +81,7 @@ static void testNonDoubleResetsStreakAndBuy() {
   const long long price = b.tiles[3].basePrice;
   CHECK(applyAction(b, act(ActionType::Buy, 0), rng));
   CHECK(b.tiles[3].ownerId == 0 && b.tiles[3].grade == Grade::D);
-  CHECK(b.players[0].cash == 1000000 - price);
+  CHECK(b.players[0].cash == b.config.startCash - price);
   CHECK(b.currentPlayerIndex == 1);
 }
 
@@ -98,8 +98,10 @@ static void testPassingStartPaysSalaryOnly() {
 static void testRentAndLiquidation() {
   GameState s = fresh();
   std::mt19937 rng(1);
-  giveTile(s, 2, 0, Grade::A, 300000);  // rent = 11000 * 8 = 88000
-  giveTile(s, 3, 1, Grade::B, 200000);  // sells for 100000
+  giveTile(s, 2, 0, Grade::A, 300000);
+  giveTile(s, 3, 1, Grade::B, 400000);  // sells for 200000
+  const long long rent = rentFor(s, s.tiles[2]);  // baseRent 11000 x 16 = 176000
+  CHECK(rent == 11000LL * 16);
   s.players[1].cash = 1000;
   s.currentPlayerIndex = 1;
   const long long ownerBefore = s.players[0].cash;
@@ -116,8 +118,8 @@ static void testRentAndLiquidation() {
   CHECK(s.tiles[3].ownerId == -1 && s.tiles[3].grade == Grade::None &&
         s.tiles[3].totalInvested == 0);
   CHECK(s.players[1].ownedTileIds.empty());
-  CHECK(s.players[1].cash == 1000 + 100000 - 88000);
-  CHECK(s.players[0].cash == ownerBefore + 88000);
+  CHECK(s.players[1].cash == 1000 + 200000 - rent);
+  CHECK(s.players[0].cash == ownerBefore + rent);
   CHECK(!s.players[1].isBankrupt);
   CHECK(s.currentPlayerIndex == 1 && s.phase == Phase::AwaitRoll);  // doubles: rolls again
 }
@@ -149,7 +151,7 @@ static void testStealSuccessKeepsGrade() {
   CHECK(s.tiles[2].ownerId == 1);
   CHECK(s.tiles[2].grade == Grade::B);
   CHECK(s.tiles[2].totalInvested == 150000);
-  CHECK(s.players[1].cash == 1000000 - 150000);
+  CHECK(s.players[1].cash == s.config.startCash - 150000);
   CHECK(s.players[0].ownedTileIds.empty());
   CHECK(s.players[1].ownedTileIds.size() == 1);
 }
@@ -169,7 +171,7 @@ static void testStealFailureSinglePenaltyAndValidation() {
 
   CHECK(applyAction(s, act(ActionType::AttemptSteal, 1, 1), rng));  // ~0.0007% chance
   CHECK(s.tiles[2].ownerId == 0);                  // steal failed
-  CHECK(s.players[1].cash == 1000000 - 1);         // lost the bribe only
+  CHECK(s.players[1].cash == s.config.startCash - 1);  // lost the bribe only
   CHECK(s.players[0].cash == ownerCash);           // and owes NO rent
 }
 
@@ -204,7 +206,7 @@ static void testJailRules() {
   c.players[1].turnsInJail = 1;
   CHECK(applyRoll(c, 1, 2));
   CHECK(c.players[1].turnsInJail == 0);
-  CHECK(c.players[1].cash == 1000000 - c.config.retakeFee);
+  CHECK(c.players[1].cash == c.config.startCash - c.config.retakeFee);
   CHECK(c.players[1].position == 13);
 
   // Voluntary fee: pay, then roll normally.
@@ -213,7 +215,7 @@ static void testJailRules() {
   d.players[0].turnsInJail = 2;
   CHECK(applyAction(d, act(ActionType::PayRetakeFee, 0), rng));
   CHECK(d.players[0].turnsInJail == 0);
-  CHECK(d.players[0].cash == 1000000 - d.config.retakeFee);
+  CHECK(d.players[0].cash == d.config.startCash - d.config.retakeFee);
   CHECK(d.currentPlayerIndex == 0 && d.phase == Phase::AwaitRoll);
   CHECK(!applyAction(d, act(ActionType::PayRetakeFee, 0), rng));  // not in jail anymore
 }
@@ -335,6 +337,275 @@ static void testIllegalActionsRejected() {
   CHECK(s.currentPlayerIndex == 0 && s.phase == Phase::AwaitRoll);
 }
 
+
+// ===========================================================================
+// Card system
+// ===========================================================================
+static int findCard(const GameState& s, CardEffectType type) {
+  for (int i = 0; i < static_cast<int>(s.deck.cards.size()); ++i)
+    if (s.deck.cards[i].effectType == type) return i;
+  return -1;
+}
+
+// Make `idx` the next card drawn.
+static void stackDeck(GameState& s, int idx) {
+  s.deck.drawPile.assign(1, idx);
+  s.deck.discardPile.clear();
+}
+
+// Add a custom card to the catalogue and make it the next draw.
+static void stackCustom(GameState& s, CardEffectType type, long long value) {
+  Card c;
+  c.id = 99;
+  c.title = "test";
+  c.effectType = type;
+  c.value = value;
+  s.deck.cards.push_back(c);
+  stackDeck(s, static_cast<int>(s.deck.cards.size()) - 1);
+}
+
+// Current player rolls onto tile 5 (an "Other" tile) from Start.
+static void landOnCardTile(GameState& s) {
+  s.players[s.currentPlayerIndex].position = 0;
+  CHECK(applyRoll(s, 2, 3));
+}
+
+// One uneventful turn: roll 1+2 (an unowned institute) and decline.
+static void playQuietTurn(GameState& s, std::mt19937& rng) {
+  const int who = s.currentPlayerIndex;
+  s.players[who].position = 0;
+  CHECK(applyRoll(s, 1, 2));
+  CHECK(s.phase == Phase::AwaitLandingChoice);
+  CHECK(applyAction(s, act(ActionType::Decline, who), rng));
+}
+
+static void testDeckContentAndCycle() {
+  GameState s = fresh();
+  const int n = static_cast<int>(s.deck.cards.size());
+  CHECK(n == 11);
+  CHECK(s.deck.drawPile.empty() && s.deck.discardPile.empty());
+  for (int i = 0; i < n; ++i) CHECK(s.deck.cards[i].id == i + 1);
+
+  // Every card comes out exactly once per cycle, then the discards are reshuffled.
+  std::vector<int> seen(n, 0);
+  for (int i = 0; i < n; ++i) {
+    const int idx = drawCardIndex(s.deck, s.deckRng);
+    CHECK(idx >= 0 && idx < n);
+    if (idx >= 0 && idx < n) ++seen[idx];
+    s.deck.discardPile.push_back(idx);
+  }
+  for (int i = 0; i < n; ++i) CHECK(seen[i] == 1);
+  CHECK(s.deck.drawPile.empty());
+  const int again = drawCardIndex(s.deck, s.deckRng);
+  CHECK(again >= 0 && again < n);
+  CHECK(static_cast<int>(s.deck.drawPile.size()) == n - 1);
+  CHECK(s.deck.discardPile.empty());
+
+  // Same seed -> same shuffle; empty deck -> -1.
+  GameState a = makeNewGame(4, makeBoard(), 7), b = makeNewGame(4, makeBoard(), 7);
+  CHECK(drawCardIndex(a.deck, a.deckRng) == drawCardIndex(b.deck, b.deckRng));
+  CardDeck empty;
+  CHECK(drawCardIndex(empty, a.deckRng) == -1);
+}
+
+static void testCardMoney() {
+  std::mt19937 rng(1);
+  // Pay: -150k.
+  GameState a = fresh();
+  stackDeck(a, 7);  // "Đóng tiền học phí kỳ phụ" is card #8 -> index 7
+  CHECK(a.deck.cards[7].value == -150000);
+  landOnCardTile(a);
+  CHECK(a.players[0].cash == a.config.startCash - 150000);
+  CHECK(a.currentPlayerIndex == 1);
+  CHECK(a.deck.discardPile.size() == 1 && a.deck.drawPile.empty());
+
+  // Gain: +100k.
+  GameState g = fresh();
+  stackDeck(g, 10);
+  CHECK(g.deck.cards[10].value == 100000);
+  landOnCardTile(g);
+  CHECK(g.players[0].cash == g.config.startCash + 100000);
+
+  // A fine you cannot cover forces liquidation.
+  GameState l = fresh();
+  stackDeck(l, 7);
+  giveTile(l, 2, 0, Grade::B, 400000);  // sells for 200000
+  l.players[0].cash = 10000;
+  landOnCardTile(l);
+  CHECK(l.phase == Phase::AwaitLiquidation);
+  CHECK(applyAction(l, act(ActionType::SellTile, 0, 0, 2), rng));
+  CHECK(l.players[0].cash == 10000 + 200000 - 150000);
+  CHECK(l.currentPlayerIndex == 1);
+}
+
+static void testCardPerProperty() {
+  GameState s = fresh();
+  stackDeck(s, findCard(s, CardEffectType::MoneyPerProperty));
+  giveTile(s, 2, 0, Grade::A, 300000);  // weight 8
+  giveTile(s, 3, 0, Grade::D, 120000);  // weight 1
+  landOnCardTile(s);
+  CHECK(s.players[0].cash == s.config.startCash - 30000LL * (8 + 1));
+
+  GameState poor = fresh();  // owns nothing -> pays nothing
+  stackDeck(poor, findCard(poor, CardEffectType::MoneyPerProperty));
+  landOnCardTile(poor);
+  CHECK(poor.players[0].cash == poor.config.startCash);
+  CHECK(poor.currentPlayerIndex == 1);
+}
+
+static void testCardPovertySubsidy() {
+  GameState s = fresh();
+  stackDeck(s, findCard(s, CardEffectType::PovertySubsidy));
+  s.players[2].cash = 100;  // poorest by far
+  landOnCardTile(s);        // player 0 draws it...
+  CHECK(s.players[2].cash == 100 + 300000);  // ...but player 2 gets the money
+  CHECK(s.players[0].cash == s.config.startCash);
+}
+
+static void testCardJailAndTeleport() {
+  GameState j = fresh();
+  stackDeck(j, findCard(j, CardEffectType::GoToJail));
+  landOnCardTile(j);
+  CHECK(j.players[0].position == 10 && j.players[0].turnsInJail == 3);
+  CHECK(j.currentPlayerIndex == 1);
+
+  // Teleport to Start from tile 5: wraps past Start -> salary.
+  GameState t = fresh();
+  stackCustom(t, CardEffectType::TeleportTile, 0);
+  landOnCardTile(t);
+  CHECK(t.players[0].position == 0);
+  CHECK(t.players[0].cash == t.config.startCash + t.config.salary);
+
+  // Teleport onto the Special Corner: its choice phase starts.
+  GameState c = fresh();
+  stackCustom(c, CardEffectType::TeleportTile, 20);
+  landOnCardTile(c);
+  CHECK(c.players[0].position == 20);
+  CHECK(c.phase == Phase::AwaitCornerChoice);
+}
+
+static void testCardSkipTurn() {
+  GameState s = fresh();
+  std::mt19937 rng(1);
+  stackDeck(s, findCard(s, CardEffectType::SkipTurn));
+  landOnCardTile(s);
+  CHECK(s.players[0].skipTurns == 1);
+  CHECK(s.currentPlayerIndex == 1);
+
+  playQuietTurn(s, rng);  // player 1
+  playQuietTurn(s, rng);  // player 2
+  playQuietTurn(s, rng);  // player 3
+  CHECK(s.currentTempo == 2);           // the round still counted
+  CHECK(s.currentPlayerIndex == 1);     // player 0 was skipped
+  CHECK(s.players[0].skipTurns == 0);   // and the penalty is used up
+  playQuietTurn(s, rng);                // 1
+  playQuietTurn(s, rng);                // 2
+  playQuietTurn(s, rng);                // 3
+  CHECK(s.currentPlayerIndex == 0);     // player 0 plays normally again
+
+  // Drawing it on a doubles roll also cancels the bonus roll.
+  GameState d = fresh();
+  stackDeck(d, findCard(d, CardEffectType::SkipTurn));
+  d.players[0].position = 1;
+  CHECK(applyRoll(d, 2, 2));  // doubles: 1 + 4 = tile 5, a card tile
+  CHECK(d.players[0].skipTurns == 1);
+  CHECK(d.players[0].consecutiveDoubles == 0);
+  CHECK(d.currentPlayerIndex == 1);  // turn passes instead of rolling again
+}
+
+static void testCardHalveDice() {
+  // 11 -> 5, 12 -> 6 (rounded down), flag is used up by the move.
+  GameState a = fresh();
+  a.players[0].halveNextDice = true;
+  a.players[0].position = 1;
+  CHECK(applyRoll(a, 5, 6));
+  CHECK(a.players[0].position == 6);
+  CHECK(!a.players[0].halveNextDice);
+
+  GameState b = fresh();
+  b.players[0].halveNextDice = true;
+  b.players[0].position = 1;
+  CHECK(applyRoll(b, 6, 6));  // doubles still count as doubles
+  CHECK(b.players[0].position == 7);
+  CHECK(b.players[0].consecutiveDoubles == 1);
+
+  // A failed roll in jail does not waste it.
+  GameState j = fresh();
+  j.players[0].halveNextDice = true;
+  j.players[0].position = 10;
+  j.players[0].turnsInJail = 3;
+  CHECK(applyRoll(j, 1, 2));
+  CHECK(j.players[0].halveNextDice);
+
+  // Via the card itself.
+  GameState c = fresh();
+  stackDeck(c, findCard(c, CardEffectType::HalveNextDice));
+  landOnCardTile(c);
+  CHECK(c.players[0].halveNextDice);
+}
+
+static void testCardStealBuff() {
+  std::mt19937 rng(1);
+  GameState s = fresh();
+  stackDeck(s, findCard(s, CardEffectType::StealBuff));
+  landOnCardTile(s);
+  CHECK(s.players[0].stealBonusPercent == 25);
+
+  // A 100% bonus makes even a 1-VND bribe certain, and the bonus is consumed.
+  GameState t = fresh();
+  giveTile(t, 2, 0, Grade::B, 150000);
+  t.currentPlayerIndex = 1;
+  t.players[1].stealBonusPercent = 100;
+  CHECK(applyRoll(t, 1, 1));
+  CHECK(applyAction(t, act(ActionType::AttemptSteal, 1, 1), rng));
+  CHECK(t.tiles[2].ownerId == 1);
+  CHECK(t.players[1].stealBonusPercent == 0);
+
+  // A failed attempt also uses it up.
+  GameState u = fresh();
+  giveTile(u, 2, 0, Grade::B, 150000);
+  u.currentPlayerIndex = 1;
+  u.players[1].stealBonusPercent = 1;  // 1 / 150000 + 1% is still a long shot
+  CHECK(applyRoll(u, 1, 1));
+  CHECK(applyAction(u, act(ActionType::AttemptSteal, 1, 1), rng));
+  CHECK(u.players[1].stealBonusPercent == 0);
+}
+
+static void testCardRentHoliday() {
+  std::mt19937 rng(1);
+  GameState s = fresh();
+  giveTile(s, 2, 3, Grade::A, 300000);  // player 3 would collect big rent
+  stackDeck(s, findCard(s, CardEffectType::RentHoliday));
+  landOnCardTile(s);
+  CHECK(s.rentFreeTurnsLeft == 3);  // 4 players alive; one tick already used
+  CHECK(s.currentPlayerIndex == 1);
+
+  const long long before = s.players[1].cash;
+  s.players[1].position = 0;
+  CHECK(applyRoll(s, 1, 1));  // player 1 lands on player 3's tile
+  CHECK(applyAction(s, act(ActionType::PayRent, 1), rng));
+  CHECK(s.players[1].cash == before);  // no rent this round
+
+  // After a full round the holiday is over.
+  GameState t = fresh();
+  stackDeck(t, findCard(t, CardEffectType::RentHoliday));
+  landOnCardTile(t);
+  playQuietTurn(t, rng);
+  playQuietTurn(t, rng);
+  playQuietTurn(t, rng);
+  CHECK(t.currentPlayerIndex == 0);
+  CHECK(t.rentFreeTurnsLeft == 0);
+}
+
+static void testCardsSwitchAndRegularTiles() {
+  GameState s = fresh();
+  s.config.cardsEnabled = false;
+  landOnCardTile(s);
+  CHECK(s.deck.discardPile.empty());  // nothing drawn
+  CHECK(s.currentPlayerIndex == 1);
+  CHECK(s.players[0].cash == s.config.startCash);
+}
+
 int main() {
   testDoublesAndTripleDoublesJail();
   testNonDoubleResetsStreakAndBuy();
@@ -350,6 +621,16 @@ int main() {
   testGameEndAtTempo64();
   testTempoAdvancesAfterEveryone();
   testIllegalActionsRejected();
+  testDeckContentAndCycle();
+  testCardMoney();
+  testCardPerProperty();
+  testCardPovertySubsidy();
+  testCardJailAndTeleport();
+  testCardSkipTurn();
+  testCardHalveDice();
+  testCardStealBuff();
+  testCardRentHoliday();
+  testCardsSwitchAndRegularTiles();
 
   std::cout << (g_total - g_failed) << "/" << g_total << " checks passed\n";
   return g_failed == 0 ? 0 : 1;
