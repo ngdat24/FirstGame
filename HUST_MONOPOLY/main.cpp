@@ -192,11 +192,53 @@ struct Stats {
   long long fuzzRejected = 0;
   long long fuzzAccepted = 0;
   long long fuzzMutations = 0;  // a REJECTED action that still changed the state (must be 0)
+  long long legalMismatches = 0;  // getLegalActions disagreeing with applyAction (must be 0)
+  long long legalChecked = 0;
   int midgameGames = 0;       // games still running when Tempo 33 starts
   int midgameLeaderWon = 0;   // ...where the Tempo-32 net-worth leader won
 };
 
 }  // namespace
+
+// Is `a` one of the actions getLegalActions() allows? Only the fields that matter for the
+// action type are compared (e.g. Buy ignores tileId and amount).
+bool isListedLegal(const LegalActions& legal, const Action& a) {
+  for (const Action& l : legal.actions) {
+    if (l.type != a.type || l.playerId != a.playerId) continue;
+    switch (a.type) {
+      case ActionType::AttemptSteal:
+        if (a.amount >= legal.minBribe && a.amount <= legal.maxBribe) return true;
+        break;
+      case ActionType::TeleportUnowned:
+      case ActionType::TeleportOwned:
+      case ActionType::SellTile:
+        if (l.tileId == a.tileId) return true;
+        break;
+      default:
+        return true;
+    }
+  }
+  return false;
+}
+
+// Soundness: every listed action (steals at the smallest, a middle and the largest bribe)
+// must really be accepted by the engine. Tried on copies so the real game is untouched.
+void checkListedActionsAreAccepted(const GameState& state, const std::mt19937& rng, Stats& st) {
+  const LegalActions legal = getLegalActions(state);
+  for (const Action& l : legal.actions) {
+    std::vector<long long> amounts = {l.amount};
+    if (l.type == ActionType::AttemptSteal)
+      amounts = {legal.minBribe, (legal.minBribe + legal.maxBribe) / 2, legal.maxBribe};
+    for (long long amount : amounts) {
+      GameState copy = state;
+      std::mt19937 r = rng;
+      Action a = l;
+      a.amount = amount;
+      ++st.legalChecked;
+      if (!applyAction(copy, a, r)) ++st.legalMismatches;
+    }
+  }
+}
 
 // Fires one random, mostly-nonsense action (wrong player, wrong phase, negative or huge
 // amounts, out-of-range tile ids). A rejected action must leave the state bit-for-bit
@@ -209,7 +251,10 @@ void injectGarbage(GameState& state, std::mt19937& rng, Stats& st, bool checkEve
   g.amount = static_cast<long long>(rng() % 3000000) - 1000000;  // negative .. huge
   g.tileId = static_cast<int>(rng() % 48) - 4;                // -4 .. 43
   const unsigned long long before = stateDigest(state);
+  const bool listed = isListedLegal(getLegalActions(state), g);
   const bool ok = applyAction(state, g, rng);
+  ++st.legalChecked;
+  if (ok != listed) ++st.legalMismatches;  // completeness: accepted <=> listed
   if (ok) {
     ++st.fuzzAccepted;
   } else {
@@ -278,6 +323,7 @@ int main(int argc, char** argv) {
       if (fuzz) {
         injectGarbage(state, rng, st, games <= 2000);
         if (state.phase == Phase::GameOver) break;
+        checkListedActionsAreAccepted(state, rng, st);
       }
       const Action a = botChoose(state, rng);
       if (!applyAction(state, a, rng)) {
@@ -355,6 +401,9 @@ int main(int argc, char** argv) {
   if (fuzz) {
     std::cout << "Fuzz: garbage actions rejected " << st.fuzzRejected << ", accepted by chance "
               << st.fuzzAccepted << ", rejected-but-changed-state " << st.fuzzMutations << "\n";
+    std::cout << "Fuzz: getLegalActions vs applyAction: " << st.legalChecked << " comparisons, "
+              << st.legalMismatches << " mismatches\n";
   }
-  return (st.illegalActions || st.invariantFailures || st.hitActionCap || st.fuzzMutations) ? 1 : 0;
+  return (st.illegalActions || st.invariantFailures || st.hitActionCap || st.fuzzMutations ||
+          st.legalMismatches) ? 1 : 0;
 }
