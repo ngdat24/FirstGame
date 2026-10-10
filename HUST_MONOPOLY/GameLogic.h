@@ -27,9 +27,23 @@ struct Action {
   int tileId = -1;       // target tile for teleport / sell
 };
 
+// What the player to move may do right now: everything a UI needs to enable its buttons.
+// `actions` lists every discrete legal action (playerId is already filled in).
+// AttemptSteal is listed ONCE with amount = 0 as a placeholder: any bribe from
+// minBribe to maxBribe (inclusive) is legal. Other actions ignore `amount`.
+struct LegalActions {
+  std::vector<Action> actions;
+  long long minBribe = 0;
+  long long maxBribe = 0;
+};
+
 // ---- Setup -----------------------------------------------------------------
 // `seed` only controls the card deck shuffle (dice use the rng you pass in).
 GameState makeNewGame(int numPlayers, const std::vector<Tile>& board, unsigned seed = 1);
+
+// Pure query: lists the legal actions of the current player (empty when the game is over).
+// Guaranteed to agree with applyAction: every listed action is accepted, nothing else is.
+LegalActions getLegalActions(const GameState& state);
 
 // ---- Main entry point ------------------------------------------------------
 // Validates and applies one action. Returns false (and changes nothing) if the

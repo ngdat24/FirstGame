@@ -705,6 +705,69 @@ bool applyRoll(GameState& s, int d1, int d2) {
   return true;
 }
 
+LegalActions getLegalActions(const GameState& s) {
+  LegalActions out;
+  if (s.phase == Phase::GameOver || s.players.empty()) return out;
+  const Player& p = s.players[s.currentPlayerIndex];
+  auto add = [&](ActionType type, int tileId = -1) {
+    Action a;
+    a.type = type;
+    a.playerId = p.id;
+    a.tileId = tileId;
+    out.actions.push_back(a);
+  };
+
+  switch (s.phase) {
+    case Phase::AwaitRoll:
+      add(ActionType::RollDice);
+      if (p.turnsInJail > 0 && p.cash >= s.config.retakeFee) add(ActionType::PayRetakeFee);
+      break;
+
+    case Phase::AwaitLandingChoice: {
+      if (s.pendingTileId < 0) break;
+      const Tile& t = s.tiles[s.pendingTileId];
+      if (t.ownerId == -1) {
+        if (t.type == TileType::Institute && p.cash >= t.basePrice) add(ActionType::Buy);
+        add(ActionType::Decline);
+      } else if (t.ownerId == p.id) {
+        if (t.grade != Grade::None && t.grade != Grade::A && p.cash >= t.upgradeCost)
+          add(ActionType::Upgrade);
+        add(ActionType::Decline);
+      } else {  // somebody else's tile: pay rent or try to steal, no way to ignore it
+        add(ActionType::PayRent);
+        if (p.cash >= 1) {
+          add(ActionType::AttemptSteal);
+          out.minBribe = 1;
+          out.maxBribe = p.cash;  // cash only, no loans
+        }
+      }
+      break;
+    }
+
+    case Phase::AwaitCornerChoice: {
+      add(ActionType::Decline);
+      const long long fee = s.config.adminFee;
+      for (const Tile& t : s.tiles) {
+        if (t.type != TileType::Institute) continue;
+        if (t.ownerId == -1 && p.cash >= fee + t.basePrice)
+          add(ActionType::TeleportUnowned, t.id);
+        else if (t.ownerId == p.id && t.grade != Grade::None && t.grade != Grade::A &&
+                 p.cash >= fee + t.upgradeCost)
+          add(ActionType::TeleportOwned, t.id);
+      }
+      break;
+    }
+
+    case Phase::AwaitLiquidation:
+      for (int tileId : p.ownedTileIds) add(ActionType::SellTile, tileId);
+      break;
+
+    default:
+      break;
+  }
+  return out;
+}
+
 bool applyAction(GameState& s, const Action& a, std::mt19937& rng) {
   if (s.phase == Phase::GameOver || s.players.empty()) return false;
   Player& p = currentPlayer(s);

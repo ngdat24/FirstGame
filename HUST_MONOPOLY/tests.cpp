@@ -666,6 +666,122 @@ static void testTempoBoundaryFollowsFirstPlayer() {
   CHECK(e.currentTempo == 2);
 }
 
+// ===========================================================================
+// getLegalActions
+// ===========================================================================
+static bool hasAction(const LegalActions& l, ActionType type, int tileId = -1) {
+  for (const Action& a : l.actions)
+    if (a.type == type && (tileId < 0 || a.tileId == tileId)) return true;
+  return false;
+}
+
+static int countAction(const LegalActions& l, ActionType type) {
+  int n = 0;
+  for (const Action& a : l.actions)
+    if (a.type == type) ++n;
+  return n;
+}
+
+// Every listed action (steals at the smallest and largest bribe) must be accepted.
+static bool allListedAccepted(const GameState& s) {
+  const LegalActions l = getLegalActions(s);
+  for (const Action& a : l.actions) {
+    std::vector<long long> amounts = {a.amount};
+    if (a.type == ActionType::AttemptSteal) amounts = {l.minBribe, l.maxBribe};
+    for (long long amount : amounts) {
+      GameState copy = s;
+      std::mt19937 rng(5);
+      Action x = a;
+      x.amount = amount;
+      if (!applyAction(copy, x, rng)) return false;
+    }
+  }
+  return true;
+}
+
+static void testLegalActions() {
+  // Rolling, with and without the jail fee.
+  GameState s = fresh();
+  LegalActions l = getLegalActions(s);
+  CHECK(l.actions.size() == 1 && hasAction(l, ActionType::RollDice));
+  CHECK(l.actions[0].playerId == 0);
+  CHECK(allListedAccepted(s));
+  s.players[0].turnsInJail = 2;
+  l = getLegalActions(s);
+  CHECK(l.actions.size() == 2 && hasAction(l, ActionType::PayRetakeFee));
+  CHECK(allListedAccepted(s));
+  s.players[0].cash = s.config.retakeFee - 1;
+  l = getLegalActions(s);
+  CHECK(l.actions.size() == 1 && !hasAction(l, ActionType::PayRetakeFee));
+
+  // Unowned tile: buy or decline. Own tile: upgrade or decline.
+  GameState a = fresh();
+  CHECK(applyRoll(a, 1, 2));
+  l = getLegalActions(a);
+  CHECK(l.actions.size() == 2 && hasAction(l, ActionType::Buy) && hasAction(l, ActionType::Decline));
+  CHECK(allListedAccepted(a));
+  GameState b = fresh();
+  giveTile(b, 3, 0, Grade::D, b.tiles[3].basePrice);
+  CHECK(applyRoll(b, 1, 2));
+  l = getLegalActions(b);
+  CHECK(l.actions.size() == 2 && hasAction(l, ActionType::Upgrade) && hasAction(l, ActionType::Decline));
+  CHECK(allListedAccepted(b));
+
+  // Opponent's tile: pay or steal (no decline); bribes limited by cash.
+  GameState c = fresh();
+  giveTile(c, 3, 1, Grade::B, 200000);
+  CHECK(applyRoll(c, 1, 2));
+  l = getLegalActions(c);
+  CHECK(l.actions.size() == 2 && hasAction(l, ActionType::PayRent) &&
+        hasAction(l, ActionType::AttemptSteal));
+  CHECK(!hasAction(l, ActionType::Decline) && !hasAction(l, ActionType::Buy));
+  CHECK(l.minBribe == 1 && l.maxBribe == c.players[0].cash);
+  CHECK(allListedAccepted(c));
+  c.players[0].cash = 0;
+  l = getLegalActions(c);
+  CHECK(l.actions.size() == 1 && hasAction(l, ActionType::PayRent));
+  CHECK(l.maxBribe == 0);
+
+  // Special Corner: only affordable targets, split into owned / unowned.
+  GameState d = fresh();
+  giveTile(d, 7, 0, Grade::D, d.tiles[7].basePrice);
+  d.players[0].position = 20;
+  resolveLanding(d, d.players[0], d.tiles[20]);
+  l = getLegalActions(d);
+  CHECK(hasAction(l, ActionType::Decline));
+  CHECK(hasAction(l, ActionType::TeleportOwned, 7));
+  CHECK(!hasAction(l, ActionType::TeleportUnowned, 7));  // already mine
+  CHECK(countAction(l, ActionType::TeleportUnowned) == 31);
+  CHECK(allListedAccepted(d));
+  d.players[0].cash = d.config.adminFee + 105000;  // can only afford a 100k tile
+  l = getLegalActions(d);
+  CHECK(hasAction(l, ActionType::TeleportUnowned, 1));   // price 100000
+  CHECK(!hasAction(l, ActionType::TeleportUnowned, 2));  // price 110000
+  CHECK(allListedAccepted(d));
+
+  // Liquidation: sell any of your own tiles, nothing else.
+  GameState e = fresh();
+  std::mt19937 rng(1);
+  giveTile(e, 2, 0, Grade::A, 300000);
+  giveTile(e, 3, 1, Grade::B, 200000);
+  giveTile(e, 4, 1, Grade::D, 130000);
+  e.players[1].cash = 1000;
+  e.currentPlayerIndex = 1;
+  CHECK(applyRoll(e, 1, 1));
+  CHECK(applyAction(e, act(ActionType::PayRent, 1), rng));
+  CHECK(e.phase == Phase::AwaitLiquidation);
+  l = getLegalActions(e);
+  CHECK(l.actions.size() == 2);
+  CHECK(hasAction(l, ActionType::SellTile, 3) && hasAction(l, ActionType::SellTile, 4));
+  CHECK(l.actions[0].playerId == 1);
+  CHECK(allListedAccepted(e));
+
+  // Nothing is legal once the game is over.
+  GameState g = fresh();
+  g.phase = Phase::GameOver;
+  CHECK(getLegalActions(g).actions.empty());
+}
+
 int main() {
   testDoublesAndTripleDoublesJail();
   testNonDoubleResetsStreakAndBuy();
@@ -694,6 +810,7 @@ int main() {
   testCardsSwitchAndRegularTiles();
   testRandomFirstPlayer();
   testTempoBoundaryFollowsFirstPlayer();
+  testLegalActions();
 
   std::cout << (g_total - g_failed) << "/" << g_total << " checks passed\n";
   return g_failed == 0 ? 0 : 1;
