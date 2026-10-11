@@ -621,7 +621,9 @@ void resolveLanding(GameState& s, Player& p, Tile& t) {
       else finishLanding(s);
       return;
 
-    default:  // Start, RetakeExam (just visiting)
+    // Listed explicitly (no default:) so that adding a TileType makes the compiler point here.
+    case TileType::Start:       // salary was already paid by movePlayer
+    case TileType::RetakeExam:  // just visiting
       finishLanding(s);
       return;
   }
