@@ -244,7 +244,7 @@ void checkListedActionsAreAccepted(const GameState& state, const std::mt19937& r
 // amounts, out-of-range tile ids). A rejected action must leave the state bit-for-bit
 // unchanged; an accepted one (it can happen by chance) must keep the state consistent.
 void injectGarbage(GameState& state, std::mt19937& rng, Stats& st, bool checkEveryStep) {
-  const int kActionTypes = 10;  // RollDice .. SellTile
+  const int kActionTypes = static_cast<int>(ActionType::Count);
   Action g;
   g.type = static_cast<ActionType>(rng() % kActionTypes);
   g.playerId = static_cast<int>(rng() % 7) - 1;               // -1 .. 5

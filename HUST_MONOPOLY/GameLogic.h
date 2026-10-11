@@ -17,7 +17,8 @@ enum class ActionType {
   AttemptSteal,      // AwaitLandingChoice on an opponent's Institute (uses amount)
   TeleportUnowned,   // AwaitCornerChoice (uses tileId)
   TeleportOwned,     // AwaitCornerChoice (uses tileId)
-  SellTile           // AwaitLiquidation (uses tileId)
+  SellTile,          // AwaitLiquidation (uses tileId)
+  Count              // sentinel = number of action types. Keep it LAST; never use it as an action.
 };
 
 struct Action {

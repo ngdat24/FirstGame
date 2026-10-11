@@ -70,6 +70,11 @@ const ActionName kActionNames[] = {
     {ActionType::SellTile, "sell_tile"},
 };
 
+// Adding an ActionType without giving it a wire name is a compile error, not a silent gap.
+static_assert(sizeof(kActionNames) / sizeof(kActionNames[0]) ==
+                  static_cast<size_t>(ActionType::Count),
+              "every ActionType needs an entry in kActionNames (protocol.cpp)");
+
 const char* actionName(ActionType t) {
   for (const ActionName& n : kActionNames)
     if (n.type == t) return n.name;
