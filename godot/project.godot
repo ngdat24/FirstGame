@@ -1,0 +1,10 @@
+; Engine configuration file.
+; It's best edited using the editor UI, not directly, since the parameters are often
+; interdependent.
+
+config_version=5
+
+[application]
+
+config/name="HUST Monopoly"
+config/features=PackedStringArray("4.4")
