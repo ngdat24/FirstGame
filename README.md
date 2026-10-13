@@ -28,13 +28,18 @@ g++ -std=c++17 -O2 play.cpp protocol.cpp GameLogic.cpp -o play
 g++ -std=c++17 -O2 main.cpp GameLogic.cpp -o sim
 ./sim --games 2000          # also: --fuzz  --nocards  --verbose --seed 7
 
+# Local HTTP server for Godot (Windows MinGW)
+g++ -std=c++17 -Wall -Wextra -O2 server.cpp protocol.cpp GameLogic.cpp -o server.exe -lws2_32 -lwsock32
+.\server.exe
+
 # Tests
 g++ -std=c++17 -O2 tests.cpp GameLogic.cpp -o tests && ./tests
 g++ -std=c++17 -O2 tests_protocol.cpp protocol.cpp GameLogic.cpp -o tests_protocol && ./tests_protocol
 ```
 `tests_protocol` takes about 20 seconds (`--quick` for a short run). On a Windows console run
-`chcp 65001` first so the Vietnamese card texts display correctly. Compiled programs are
-ignored by git (see `.gitignore`).
+`chcp 65001` first so the Vietnamese card texts display correctly. To test the HTTP server on
+Windows, run `python test_server.py .\server.exe` in a second terminal; the test starts and
+stops its own temporary server. Compiled programs are ignored by git (see `.gitignore`).
 
 ## Code map (`HUST_MONOPOLY/`)
 | File | What it holds |
@@ -44,9 +49,12 @@ ignored by git (see `.gitignore`).
 | `GameLogic.h/.cpp` | the rules engine: `applyAction`, `getLegalActions`, turn flow |
 | `protocol.h/.cpp` | the engine as JSON in / JSON out |
 | `play.cpp` | text hotseat client (uses only the JSON protocol) |
+| `server.cpp`, `third_party/httplib.h` | local HTTP transport for Godot |
+| `test_server.py` | HTTP end-to-end, security and concurrency tests |
 | `main.cpp` | bot simulator and fuzzer |
 | `tests.cpp`, `tests_protocol.cpp` | tests for the rules and for the JSON layer |
 | `third_party/json.hpp` | [nlohmann/json](https://github.com/nlohmann/json) 3.11.3 (MIT) |
+| `godot/` | Godot 4 client bridge and headless smoke test |
 
 ## Changing the rules
 1. Update `RULES.md` first (and `PROTOCOL.md` if the wire format changes).

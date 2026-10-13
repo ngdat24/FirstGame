@@ -15,6 +15,10 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include "protocol.h"
 #include "third_party/json.hpp"
 
@@ -149,6 +153,12 @@ bool readLine(std::string& line) { return static_cast<bool>(std::getline(std::ci
 }  // namespace
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+  // The source strings are UTF-8; make the Windows console decode them as UTF-8.
+  SetConsoleCP(CP_UTF8);
+  SetConsoleOutputCP(CP_UTF8);
+#endif
+
   bool autoPlay = false;
   long long seed = -1;
   for (int i = 1; i < argc; ++i) {

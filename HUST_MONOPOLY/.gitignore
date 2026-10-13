@@ -1,4 +1,8 @@
 ﻿sim
 tests
+tests_protocol
+play
+server
 *.exe
 *.o
+.godot/
