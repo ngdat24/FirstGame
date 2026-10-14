@@ -409,7 +409,7 @@ int main(int argc, char** argv) {
             << "  (total net worth at the end / at the start)\n";
   std::cout << "Per game:               " << st.rollsSum / n << " rolls, " << st.decisionsSum / n
             << " real decisions\n";
-  std::cout << "Ended before tempo 64:  " << 100.0 * st.endedEarly / n << "%\n";
+  std::cout << "Ended before max tempo: " << 100.0 * st.endedEarly / n << "%\n";
   std::cout << "Avg winner net worth:   " << st.winnerWorthSum / n << "\n";
   if (st.midgameGames > 0)
     std::cout << "Midgame leader wins:    " << 100.0 * st.midgameLeaderWon / st.midgameGames

@@ -50,7 +50,7 @@ static void testRulesAndNewGame() {
   CHECK(rules["ok"] == true);
   CHECK(rules["cards"].size() == 11);
   CHECK(rules["rules"]["start_cash"] == 700000);
-  CHECK(rules["rules"]["rent_factor"]["A"] == 16);
+  CHECK(rules["rules"]["rent_factor"]["A"] == 32);
 
   CHECK(isError(call(e, R"({"cmd":"get_state"})"), "no_game"));
   CHECK(isError(call(e, R"({"cmd":"action","type":"roll_dice","player_id":0})"), "no_game"));

@@ -105,9 +105,9 @@ static void testRentAndLiquidation() {
   std::mt19937 rng(1);
   giveTile(s, 2, 0, Grade::A, 300000);
   giveTile(s, 3, 1, Grade::B, 400000);  // sells for 200000
-  const long long rent = rentFor(s, s.tiles[2]);  // baseRent 11000 x 16 = 176000
-  CHECK(rent == 11000LL * 16);
-  s.players[1].cash = 1000;
+  const long long rent = rentFor(s, s.tiles[2]);  // baseRent 11000 x 32 = 352000
+  CHECK(rent == 11000LL * 32);
+  s.players[1].cash = 200000;
   s.currentPlayerIndex = 1;
   const long long ownerBefore = s.players[0].cash;
 
@@ -123,7 +123,7 @@ static void testRentAndLiquidation() {
   CHECK(s.tiles[3].ownerId == -1 && s.tiles[3].grade == Grade::None &&
         s.tiles[3].totalInvested == 0);
   CHECK(s.players[1].ownedTileIds.empty());
-  CHECK(s.players[1].cash == 1000 + 200000 - rent);
+  CHECK(s.players[1].cash == 200000 + 200000 - rent);
   CHECK(s.players[0].cash == ownerBefore + rent);
   CHECK(!s.players[1].isBankrupt);
   CHECK(s.currentPlayerIndex == 1 && s.phase == Phase::AwaitRoll);  // doubles: rolls again
