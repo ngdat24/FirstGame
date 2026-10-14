@@ -187,13 +187,13 @@ func _build_ui() -> void:
 func _create_dialogs() -> void:
 	card_modal = AcceptDialog.new()
 	card_modal.title = "Card drawn"
-	card_modal.ok_text = "Continue"
+	card_modal.get_ok_button().text = "Continue"
 	card_modal.min_size = Vector2(520, 240)
 	add_child(card_modal)
 
 	tile_inspector = AcceptDialog.new()
 	tile_inspector.title = "Institute information"
-	tile_inspector.ok_text = "Close"
+	tile_inspector.get_ok_button().text = "Close"
 	tile_inspector.min_size = Vector2(520, 300)
 	add_child(tile_inspector)
 
