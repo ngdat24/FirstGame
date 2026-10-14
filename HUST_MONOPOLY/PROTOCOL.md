@@ -50,8 +50,24 @@ legal:{actions:[{type, player_id, tile_id, amount}], min_bribe, max_bribe}
 - `attempt_steal` is listed once with `amount` 0: send any bribe in `[min_bribe, max_bribe]`.
 - The snapshot never contains the draw pile (neither order nor contents) or any RNG state.
 
+## HTTP transport (`server.cpp`)
+`./server` serves the protocol on `http://127.0.0.1:8080` (`--port N`, `--dev` for seeds).
+- `POST /api` — body = one JSON request, header `Content-Type: application/json`. The answer is
+  the JSON response. Game-level problems are still HTTP 200 with `"ok":false`.
+- `GET /health` — `{"ok":true}`.
+- Transport errors use the same JSON shape: 403 `forbidden_host`, 413 `request_too_large`,
+  415 `unsupported_media_type`, 404 `not_found`.
+- A web page you visit can reach `localhost`, so the server refuses any POST that is not
+  `application/json` (a cross-site page can't send that without a CORS preflight, which is never
+  answered) and any `Host` header that is not localhost / 127.0.0.1 / [::1] (DNS rebinding).
+  CORS is therefore off; it will have to be added deliberately for a browser build.
+- One request touches the engine at a time (a mutex), checked with ThreadSanitizer.
+- Godot's JSON parser returns every number as a float and `JSON.stringify` writes `0.0`, which
+  this protocol refuses (integers only). `godot/engine_client.gd` converts for you.
+
 ## Known limits (planned, not frozen)
 - `events` are plain text. A UI that animates dice, moves and card draws will want structured
   events (type + fields); that is the next addition, designed together with the Godot board.
 - No authentication or per-seat identity: any caller may send actions for the current player.
-  That belongs to the server layer later.
+  Fine for one machine; with `--host 0.0.0.0` anyone on the network can play. Seats and tokens
+  come with real multiplayer.

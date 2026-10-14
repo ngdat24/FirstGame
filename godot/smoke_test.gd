@@ -24,6 +24,7 @@ func _check(condition: bool, what: String) -> void:
 
 
 func _run(client: Node) -> void:
+	await process_frame  # let the scene tree finish setting up before using the node
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 12345
 

@@ -194,7 +194,12 @@ struct Stats {
   long long fuzzMutations = 0;  // a REJECTED action that still changed the state (must be 0)
   long long legalMismatches = 0;  // getLegalActions disagreeing with applyAction (must be 0)
   long long legalChecked = 0;
-  int midgameGames = 0;       // games still running when Tempo 33 starts
+  int gamesWithExpulsion = 0;
+  double startWorthSum = 0;   // total net worth of all players at the start of each game
+  double endWorthSum = 0;     // ...and at the end (expelled players count as 0)
+  long long rollsSum = 0;     // dice rolls (quick, no thinking)
+  long long decisionsSum = 0; // real choices: non-roll actions with more than one legal option
+  int midgameGames = 0;       // games still running at the halfway tempo
   int midgameLeaderWon = 0;   // ...where the Tempo-32 net-worth leader won
 };
 
@@ -281,6 +286,8 @@ int main(int argc, char** argv) {
   bool fuzz = false;
   bool flatRent = false;        // rent factors 1,2,3,4 instead of 1,2,4,8
   double examBonusScale = 1.0;  // 0 disables Exam Season bonuses
+  int maxTempoOverride = -1;    // --maxtempo N: shorter or longer game
+  int rentPercent = 100;        // --rentpct P: rent factors x P/100 (100 = current preset)
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--games" && i + 1 < argc) games = std::atoi(argv[++i]);
@@ -293,6 +300,8 @@ int main(int argc, char** argv) {
     else if (arg == "--nocards") cardsEnabled = false;
     else if (arg == "--fuzz") fuzz = true;
     else if (arg == "--exambonus" && i + 1 < argc) examBonusScale = std::atof(argv[++i]);
+    else if (arg == "--maxtempo" && i + 1 < argc) maxTempoOverride = std::atoi(argv[++i]);
+    else if (arg == "--rentpct" && i + 1 < argc) rentPercent = std::atoi(argv[++i]);
     else if (arg == "--stealprob" && i + 1 < argc) g_stealChance = std::atof(argv[++i]);
   }
   if (verbose) games = 1;
@@ -313,12 +322,15 @@ int main(int argc, char** argv) {
       const int flat[5] = {0, 1, 2, 3, 4};
       for (int i = 0; i < 5; ++i) state.config.rentFactor[i] = flat[i];
     }
-    for (int& f : state.config.rentFactor) f *= rentMultiplier;
+    for (int& f : state.config.rentFactor) f = f * rentMultiplier * rentPercent / 100;
+    if (maxTempoOverride > 0) state.config.maxTempo = maxTempoOverride;
     state.config.examBonusA = static_cast<long long>(state.config.examBonusA * examBonusScale);
     state.config.examBonusB = static_cast<long long>(state.config.examBonusB * examBonusScale);
 
     long long actions = 0;
-    int midLeader = -1;  // net-worth leader at the end of Tempo 32
+    int midLeader = -1;  // net-worth leader at the halfway tempo
+    long long rolls = 0, decisions = 0;
+    for (const Player& p : state.players) st.startWorthSum += static_cast<double>(calculateNetWorth(state, p));
     while (state.phase != Phase::GameOver && actions < kActionCap) {
       if (fuzz) {
         injectGarbage(state, rng, st, games <= 2000);
@@ -326,13 +338,15 @@ int main(int argc, char** argv) {
         checkListedActionsAreAccepted(state, rng, st);
       }
       const Action a = botChoose(state, rng);
+      if (a.type == ActionType::RollDice) ++rolls;
+      else if (getLegalActions(state).actions.size() > 1) ++decisions;
       if (!applyAction(state, a, rng)) {
         ++st.illegalActions;
         if (verbose) std::cout << "ILLEGAL ACTION from bot (phase " << static_cast<int>(state.phase) << ")\n";
         break;
       }
       ++actions;
-      if (midLeader < 0 && state.currentTempo >= 33 && state.phase != Phase::GameOver) {
+      if (midLeader < 0 && state.currentTempo >= state.config.maxTempo / 2 + 1 && state.phase != Phase::GameOver) {
         long long best = -1;
         for (const Player& p : state.players) {
           if (p.isBankrupt) continue;
@@ -362,6 +376,11 @@ int main(int argc, char** argv) {
     }
     st.totalTempos += state.currentTempo;
     st.totalExpelled += kPlayers - countAlivePlayers(state);
+    if (countAlivePlayers(state) < kPlayers) ++st.gamesWithExpulsion;
+    for (const Player& p : state.players)
+      if (!p.isBankrupt) st.endWorthSum += static_cast<double>(calculateNetWorth(state, p));
+    st.rollsSum += rolls;
+    st.decisionsSum += decisions;
     if (state.currentTempo < state.config.maxTempo) ++st.endedEarly;
     if (midLeader >= 0 && state.winnerId >= 0) {
       ++st.midgameGames;
@@ -385,11 +404,16 @@ int main(int argc, char** argv) {
   std::cout << "Avg actions per game:   " << st.totalActions / n << "\n";
   std::cout << "Avg final tempo:        " << st.totalTempos / n << "\n";
   std::cout << "Avg players expelled:   " << st.totalExpelled / n << " / " << kPlayers << "\n";
+  std::cout << "Games with an expulsion:" << " " << 100.0 * st.gamesWithExpulsion / n << "%\n";
+  std::cout << "Money supply growth:    x" << st.endWorthSum / st.startWorthSum
+            << "  (total net worth at the end / at the start)\n";
+  std::cout << "Per game:               " << st.rollsSum / n << " rolls, " << st.decisionsSum / n
+            << " real decisions\n";
   std::cout << "Ended before tempo 64:  " << 100.0 * st.endedEarly / n << "%\n";
   std::cout << "Avg winner net worth:   " << st.winnerWorthSum / n << "\n";
   if (st.midgameGames > 0)
     std::cout << "Midgame leader wins:    " << 100.0 * st.midgameLeaderWon / st.midgameGames
-              << "%  (of " << st.midgameGames << " games reaching Tempo 33)\n";
+              << "%  (of " << st.midgameGames << " games reaching the halfway tempo)\n";
   std::cout << "Win rate by seat:       ";
   for (int i = 0; i < kPlayers; ++i)
     std::cout << "P" << (i + 1) << " " << 100.0 * st.winsBySeat[i] / n << "%  ";
