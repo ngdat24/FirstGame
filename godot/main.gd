@@ -290,7 +290,7 @@ func _render_snapshot(snap: Dictionary) -> void:
 	for i in range(min(4, players.size())):
 		var p: Dictionary = players[i]
 		var pid := int(p.get("id", i))
-		var p_color := PLAYER_COLORS[pid].to_html(false)
+		var p_color: String = PLAYER_COLORS[pid].to_html(false)
 		var turn_tag := " [b][<< TURN][/b]" if (pid == cur_pid and not game_over) else ""
 		var status_tags: PackedStringArray = []
 		if bool(p.get("is_bankrupt", false)):
