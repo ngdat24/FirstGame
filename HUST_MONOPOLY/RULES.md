@@ -1,4 +1,4 @@
-# HUST Monopoly — Frozen Rules Spec v1.0
+# HUST Monopoly — Frozen Rules Spec v1.1
 
 Describes exactly what the engine (`GameLogic.cpp`) does. If the code and this file ever
 disagree, that is a bug in one of them: fix it and add a test.
@@ -30,7 +30,7 @@ version. New mechanic: backlog, not during Phase 2.
   moving; the turn ends.
 - The turn ends immediately (no bonus roll even on doubles) when the player is sent to jail
   or draws *Đi chơi với bạn gái quên học*.
-- **Start salary** (100,000) is paid when a normal move passes or lands on tile 0 (dice rolls
+- **Start salary** (50,000) is paid when a normal move passes or lands on tile 0 (dice rolls
   and card moves). Teleporting at the Special Corner never pays it.
 
 ## 3. Retake Exam room (jail)
@@ -58,7 +58,7 @@ version. New mechanic: backlog, not during Phase 2.
 - **Card tiles:** draw the top card of the single shared deck; its effect applies at once.
 
 ## 5. Rent and stealing
-- **Rent** = `baseRent × factor`, factor = D 2 · C 4 · B 8 · A 16. Paid to the owner.
+- **Rent** = `baseRent × factor`, factor = D 4 · C 8 · B 16 · A 32. Paid to the owner.
 - **Steal (Proxy Test-Taker):** the player picks a bribe from **1 to their cash** (cash only,
   no loans). Success chance = `min(1, bribe / totalInvested + bonus)`, where `totalInvested`
   = base price + all upgrade costs paid, and `bonus` is the one-shot Phao thi card bonus (used
@@ -104,7 +104,7 @@ when the draw pile runs out. Durations in the last column.
 (The engine also supports a "teleport to tile N" effect; no card uses it.)
 
 ## 9. End of game and winner
-- The game ends when **tempo 64 concludes** (after the last player's turn) or when one player
+- The game ends when **tempo 32 concludes** (after the last player's turn) or when one player
   is left.
 - **Net worth** = cash + Σ `totalInvested` of owned Institutes. Highest wins; ties → more
   cash → lower player id.

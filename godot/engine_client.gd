@@ -6,7 +6,7 @@ extends Node
 ## Problems reaching the server come back the same way, with error "no_server" or "http_error",
 ## so the UI only ever has to look at "ok".
 ##
-## Usage (add this script as a child node, or as an Autoload):
+## Usage (add this script as a child node, or as an Autoload; the node must be in the scene tree):
 ##   var resp: Dictionary = await client.new_game()
 ##   var snap: Dictionary = resp["snapshot"]
 ##   resp = await client.send_action(snap["legal"]["actions"][0])
@@ -20,16 +20,22 @@ var _http: HTTPRequest
 var _busy := false
 
 
-func _ready() -> void:
-	_http = HTTPRequest.new()
-	_http.timeout = 10.0
-	add_child(_http)
+## Created on first use (not in _ready), so the client works even if it is called before
+## Godot has run its _ready, e.g. from a SceneTree script or right after add_child.
+func _ensure_http() -> void:
+	if _http == null:
+		_http = HTTPRequest.new()
+		_http.timeout = 10.0
+		add_child(_http)
 
 
 ## Sends one raw protocol request (a Dictionary) and returns the parsed answer.
 func call_engine(request: Dictionary) -> Dictionary:
 	if _busy:
 		return _error("busy", "a request is already in flight; await the previous call first")
+	if not is_inside_tree():
+		return _error("not_in_tree", "add the client node to the scene tree (and wait one frame) before using it")
+	_ensure_http()
 	_busy = true
 	var headers := PackedStringArray(["Content-Type: application/json"])
 	var err := _http.request(base_url + "/api", headers, HTTPClient.METHOD_POST, JSON.stringify(request))
