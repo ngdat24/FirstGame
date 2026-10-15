@@ -5,9 +5,9 @@ A 4-player Monopoly-style board game set on the Hanoi University of Science and 
 hire a "Proxy Test-Taker" to steal a rival's Institute, Exam Season pays scholarships, the jail is
 the Retake Exam room, and an 11-card deck brings student life into the game.
 
-**Status:** rules engine finished and frozen (v1.0), JSON protocol v1, text hotseat client,
-local HTTP server, and a Godot client script that plays a full game against it.
-Next: the Godot board UI.
+**Status:** rules engine frozen (v1.2, preset "48 A"), JSON protocol v1, text hotseat client,
+local HTTP server, and a playable Godot board UI (text-based placeholder graphics for now).
+Next: visual polish and more playtesting.
 
 ## Documents (the source of truth)
 - [`HUST_MONOPOLY/RULES.md`](HUST_MONOPOLY/RULES.md) — the frozen rules spec: every rule, all 11
@@ -45,8 +45,14 @@ The simulator also takes `--maxtempo N`, `--salary N`, `--cash N` and `--rentpct
 percentage of the current preset) for balance experiments.
 
 ### Godot
-`godot/` is a minimal Godot 4.4 project: `engine_client.gd` talks to the server, and
-`smoke_test.gd` plays a whole game through it. With the server running:
+`godot/` is a Godot 4 project: `main.tscn` + `main.gd` is the board UI, `engine_client.gd` talks to
+the server, `smoke_test.gd` plays a whole game through the client, and `ui_test.gd` plays a whole
+game through the real UI by pressing its buttons (and checks that the bribe controls send exactly
+what they display). Start `./server --dev` first, then:
+```
+godot --headless --path godot --script ui_test.gd -- --seed=7
+```
+And for the client alone:
 ```
 godot --headless --path godot --script smoke_test.gd -- --url=http://127.0.0.1:8080
 ``` On a Windows console run

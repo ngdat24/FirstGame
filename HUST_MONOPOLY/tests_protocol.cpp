@@ -50,7 +50,10 @@ static void testRulesAndNewGame() {
   CHECK(rules["ok"] == true);
   CHECK(rules["cards"].size() == 11);
   CHECK(rules["rules"]["start_cash"] == 700000);
-  CHECK(rules["rules"]["rent_factor"]["A"] == 32);
+  const GameConfig defaults;
+  CHECK(rules["rules"]["rent_factor"]["A"] == defaults.rentFactor[4]);
+  CHECK(rules["rules"]["max_tempo"] == defaults.maxTempo);
+  CHECK(rules["rules"]["salary"] == defaults.salary);
 
   CHECK(isError(call(e, R"({"cmd":"get_state"})"), "no_game"));
   CHECK(isError(call(e, R"({"cmd":"action","type":"roll_dice","player_id":0})"), "no_game"));

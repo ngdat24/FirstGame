@@ -10,20 +10,20 @@
 #include "tile.h"
 
 // All tunable numbers live here so simulations can change them without
-// touching the rules code. The economy numbers (start cash, salary, rent) are
-// the preset chosen after the balance simulations; the rest are still
-// placeholders.
+// touching the rules code. The economy numbers (game length, start cash, salary,
+// rent) are preset "48 A", chosen after the playtests and the balance simulations;
+// the rest are still placeholders.
 struct GameConfig {
   long long startCash = 700000;
-  long long salary = 50000;     // collected when passing/landing on Start
+  long long salary = 75000;     // collected when passing/landing on Start
   long long retakeFee = 50000;  // Retake Exam escape fee (voluntary or forced)
   long long adminFee = 20000;   // Special Corner teleport fee
   int jailTurns = 3;
   int maxDoublesInRow = 3;      // this many doubles in one turn -> jail
-  int maxTempo = 32;            // game ends when this tempo concludes
-  int tempoPerSemester = 16;
+  int maxTempo = 48;            // game ends when this tempo concludes (3 semesters)
+  int tempoPerSemester = 16;    // 12 study tempos + 4 exam tempos
   int examSeasonStart = 13;     // tempos 13..16 of each semester pay scholarships
-  int rentFactor[5] = {0, 4, 8, 16, 32};  // x baseRent, indexed by Grade: None,D,C,B,A
+  int rentFactor[5] = {0, 3, 6, 12, 24};  // x baseRent, indexed by Grade: None,D,C,B,A
   long long examBonusB = 20000;
   long long examBonusA = 50000;
   bool cardsEnabled = true;     // false: the card tiles do nothing (for A/B simulations)

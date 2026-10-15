@@ -195,6 +195,8 @@ struct Stats {
   long long legalMismatches = 0;  // getLegalActions disagreeing with applyAction (must be 0)
   long long legalChecked = 0;
   int gamesWithExpulsion = 0;
+  double endTiles[5] = {0, 0, 0, 0, 0};  // owned Institutes at the end, indexed by Grade
+  int gamesWithGradeA = 0;
   double startWorthSum = 0;   // total net worth of all players at the start of each game
   double endWorthSum = 0;     // ...and at the end (expelled players count as 0)
   long long rollsSum = 0;     // dice rolls (quick, no thinking)
@@ -379,6 +381,15 @@ int main(int argc, char** argv) {
     if (countAlivePlayers(state) < kPlayers) ++st.gamesWithExpulsion;
     for (const Player& p : state.players)
       if (!p.isBankrupt) st.endWorthSum += static_cast<double>(calculateNetWorth(state, p));
+    {
+      bool hasA = false;
+      for (const Tile& t : state.tiles) {
+        if (t.ownerId < 0) continue;
+        st.endTiles[static_cast<int>(t.grade)] += 1;
+        if (t.grade == Grade::A) hasA = true;
+      }
+      if (hasA) ++st.gamesWithGradeA;
+    }
     st.rollsSum += rolls;
     st.decisionsSum += decisions;
     if (state.currentTempo < state.config.maxTempo) ++st.endedEarly;
@@ -396,6 +407,7 @@ int main(int argc, char** argv) {
   if (verbose) return 0;
 
   const double n = st.games;
+  const int maxTempoShown = (maxTempoOverride > 0) ? maxTempoOverride : GameConfig().maxTempo;
   std::cout << std::fixed << std::setprecision(1);
   std::cout << "Games simulated:        " << st.games << "\n";
   std::cout << "Illegal bot actions:    " << st.illegalActions << "\n";
@@ -407,9 +419,12 @@ int main(int argc, char** argv) {
   std::cout << "Games with an expulsion:" << " " << 100.0 * st.gamesWithExpulsion / n << "%\n";
   std::cout << "Money supply growth:    x" << st.endWorthSum / st.startWorthSum
             << "  (total net worth at the end / at the start)\n";
+  std::cout << "Owned tiles at the end: D " << st.endTiles[1] / n << ", C " << st.endTiles[2] / n
+            << ", B " << st.endTiles[3] / n << ", A " << st.endTiles[4] / n << "  (average per game; "
+            << 100.0 * st.gamesWithGradeA / n << "% of games end with a grade-A tile)\n";
   std::cout << "Per game:               " << st.rollsSum / n << " rolls, " << st.decisionsSum / n
             << " real decisions\n";
-  std::cout << "Ended before max tempo: " << 100.0 * st.endedEarly / n << "%\n";
+  std::cout << "Ended before tempo " << maxTempoShown << ":  " << 100.0 * st.endedEarly / n << "%\n";
   std::cout << "Avg winner net worth:   " << st.winnerWorthSum / n << "\n";
   if (st.midgameGames > 0)
     std::cout << "Midgame leader wins:    " << 100.0 * st.midgameLeaderWon / st.midgameGames

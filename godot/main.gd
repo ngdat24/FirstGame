@@ -1,10 +1,9 @@
 extends Control
 ## HUST Monopoly — 2.5D Isometric Board UI (Phase 2 Hotseat Prototype)
-## Implements the isometric 3D-block diamond board layout with:
-## - True 2.5D extruded isometric blocks (top face + shaded left/right walls + wireframe)
-## - Central green courtyard matching the concept sketch
-## - Dynamic block height that grows as Institutes upgrade from D -> C -> B -> A
-## - Clickable isometric tiles + 3D player tokens + full Steal Bribe % calculator
+## Combines:
+## - 2.5D Isometric diamond board with 3D extruded blocks & green central courtyard
+## - Claude's Bribe fix (step = 1 on HSlider/SpinBox + max_bribe capped at 100% steal threshold)
+## - Explicit GDScript types for Godot 4.4 - 4.7 compatibility and full ui_test.gd compliance
 
 const PLAYER_COLORS: Array[Color] = [
 	Color(0.92, 0.28, 0.28), # Player 1 - Red
@@ -76,7 +75,6 @@ class IsoBoardCanvas extends Control:
 	func _gui_input(event: InputEvent) -> void:
 		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 			var click_pos: Vector2 = event.position
-			# Check from front-most tiles to back-most tiles
 			for i in range(39, -1, -1):
 				if top_polygons[i].size() == 4 and Geometry2D.is_point_in_polygon(click_pos, top_polygons[i]):
 					selected_tid = i
@@ -87,7 +85,7 @@ class IsoBoardCanvas extends Control:
 	func _draw() -> void:
 		var origin: Vector2 = Vector2(size.x * 0.5, 48.0)
 
-		# 1. Draw the central green lawn (courtyard inside c=1..10, r=1..10)
+		# 1. Central green courtyard lawn
 		var lawn_pts := PackedVector2Array([
 			_iso(1.0, 1.0, origin),
 			_iso(10.0, 1.0, origin),
@@ -97,12 +95,11 @@ class IsoBoardCanvas extends Control:
 		draw_colored_polygon(lawn_pts, Color(0.56, 0.82, 0.16))
 		draw_polyline(PackedVector2Array([lawn_pts[0], lawn_pts[1], lawn_pts[2], lawn_pts[3], lawn_pts[0]]), Color(0.25, 0.42, 0.08), 2.0)
 
-		# Subtle grid lines on the green lawn for depth
 		for g in range(2, 10):
 			draw_line(_iso(float(g), 1.0, origin), _iso(float(g), 10.0, origin), Color(0.50, 0.76, 0.14, 0.5), 1.0)
 			draw_line(_iso(1.0, float(g), origin), _iso(10.0, float(g), origin), Color(0.50, 0.76, 0.14, 0.5), 1.0)
 
-		# 2. Sort all 40 tiles back-to-front by (c + r) so 3D blocks occlude properly
+		# 2. Painter's Algorithm back-to-front sort by (c + r)
 		var draw_order: Array[int] = []
 		for i in range(40):
 			draw_order.append(i)
@@ -132,7 +129,6 @@ class IsoBoardCanvas extends Control:
 		var grade: String = str(t.get("grade", "none"))
 		var is_corner: bool = (tid % 10 == 0)
 
-		# Determine 3D block height (corners and upgraded institutes stand taller!)
 		var h: float = 14.0
 		if is_corner:
 			h = 26.0
@@ -146,13 +142,11 @@ class IsoBoardCanvas extends Control:
 				"A": h = 36.0
 				_: h = 14.0
 
-		# Base ground vertices
 		var t0: Vector2 = _iso(c, r, origin)
 		var r0: Vector2 = _iso(c + 1.0, r, origin)
 		var b0: Vector2 = _iso(c + 1.0, r + 1.0, origin)
 		var l0: Vector2 = _iso(c, r + 1.0, origin)
 
-		# Extruded top face vertices
 		var up := Vector2(0.0, -h)
 		var top_t: Vector2 = t0 + up
 		var top_r: Vector2 = r0 + up
@@ -164,7 +158,6 @@ class IsoBoardCanvas extends Control:
 		var left_wall := PackedVector2Array([top_l, top_b, b0, l0])
 		var right_wall := PackedVector2Array([top_b, top_r, r0, b0])
 
-		# Pick block colors
 		var top_col := Color(0.93, 0.94, 0.96)
 		if owner_id >= 0 and owner_id < 4:
 			top_col = PLAYER_COLORS[owner_id].lightened(0.32)
@@ -187,7 +180,6 @@ class IsoBoardCanvas extends Control:
 			edge_col = Color(1.0, 1.0, 1.0)
 			edge_w = 2.5
 
-		# Draw 3D faces + crisp outlines
 		draw_colored_polygon(left_wall, left_col)
 		draw_colored_polygon(right_wall, right_col)
 		draw_colored_polygon(top_poly, top_col)
@@ -196,7 +188,6 @@ class IsoBoardCanvas extends Control:
 		draw_line(top_b, b0, edge_col, 1.3)
 		draw_polyline(PackedVector2Array([top_t, top_r, top_b, top_l, top_t]), edge_col, edge_w)
 
-		# Draw tile number & grade on the top diamond center
 		var center: Vector2 = (top_t + top_b) * 0.5
 		var label_txt: String = "#%d" % tid
 		if grade != "none" and grade != "":
@@ -212,7 +203,6 @@ class IsoBoardCanvas extends Control:
 
 		draw_string(font, center + Vector2(-18.0, 4.0), label_txt, HORIZONTAL_ALIGNMENT_CENTER, 40.0, 10, Color(0.08, 0.10, 0.12))
 
-		# Draw 3D player tokens standing on this tile
 		var here_pids: Array[int] = []
 		for p in players:
 			var pd: Dictionary = p
@@ -228,7 +218,6 @@ class IsoBoardCanvas extends Control:
 		for k in range(here_pids.size()):
 			var pid: int = here_pids[k]
 			var tok_pos: Vector2 = center + (offsets[k] if here_pids.size() > 1 else Vector2(0.0, -6.0))
-			# Shadow + 3D pawn cylinder/sphere
 			draw_circle(tok_pos + Vector2(0.0, 3.0), 7.5, Color(0, 0, 0, 0.45))
 			draw_circle(tok_pos, 7.5, PLAYER_COLORS[clampi(pid, 0, 3)])
 			draw_arc(tok_pos, 7.5, 0.0, TAU, 20, Color.WHITE, 1.8)
@@ -257,7 +246,6 @@ func _build_ui() -> void:
 	root_hbox.add_theme_constant_override("separation", 10)
 	add_child(root_hbox)
 
-	# --- Left Column: Isometric Board + Bottom Inspector/Event Strip ---
 	var left_vbox := VBoxContainer.new()
 	left_vbox.custom_minimum_size = Vector2(870, 0)
 	left_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -265,7 +253,6 @@ func _build_ui() -> void:
 	left_vbox.add_theme_constant_override("separation", 6)
 	root_hbox.add_child(left_vbox)
 
-	# Top Banner + Dice Bar above the Isometric Board
 	var top_stage := PanelContainer.new()
 	var top_style := StyleBoxFlat.new()
 	top_style.bg_color = Color(0.13, 0.16, 0.21)
@@ -297,7 +284,6 @@ func _build_ui() -> void:
 	dice_sum_label.text = "Ready"
 	stage_hbox.add_child(dice_sum_label)
 
-	# Isometric 2.5D Board Canvas
 	iso_board = IsoBoardCanvas.new()
 	iso_board.custom_minimum_size = Vector2(860, 560)
 	iso_board.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -308,7 +294,6 @@ func _build_ui() -> void:
 	)
 	left_vbox.add_child(iso_board)
 
-	# Bottom Info Strip: Tile Inspector + Latest Turn Events
 	var bottom_hbox := HBoxContainer.new()
 	bottom_hbox.custom_minimum_size = Vector2(0, 155)
 	bottom_hbox.add_theme_constant_override("separation", 8)
@@ -332,7 +317,7 @@ func _build_ui() -> void:
 	latest_event_banner.bbcode_enabled = true
 	ev_panel.add_child(latest_event_banner)
 
-	# --- Right Sidebar: Status, 4 Players, Legal Actions + Bribe Calculator, Full Log ---
+	# --- Right Sidebar ---
 	var sidebar := VBoxContainer.new()
 	sidebar.custom_minimum_size = Vector2(460, 0)
 	sidebar.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -472,7 +457,7 @@ func _render_snapshot(snap: Dictionary) -> void:
 		return
 
 	var tempo: int = int(snap.get("tempo", 1))
-	var max_tempo: int = int(snap.get("max_tempo", 64))
+	var max_tempo: int = int(snap.get("max_tempo", 48))
 	var phase: String = str(snap.get("phase", ""))
 	var cur_pid: int = int(snap.get("current_player_id", 0))
 	var dice: Array = snap.get("last_dice", [0, 0])
@@ -528,7 +513,7 @@ func _render_snapshot(snap: Dictionary) -> void:
 		var extra: String = (" | " + ", ".join(status_tags)) if status_tags.size() > 0 else ""
 		player_cards[i].text = (
 			"[color=#%s][b]%s[/b][/color]%s\n" % [p_color, str(p.get("name", "P")), turn_tag] +
-			"Tiền: [b]%s[/b] | TS: %s\n" % [_fmt(int(p.get("cash", 0))), _fmt(int(p.get("net_worth", 0)))] +
+			"Tiền: [b]%s[/b] | Tài sản: %s\n" % [_fmt(int(p.get("cash", 0))), _fmt(int(p.get("net_worth", 0)))] +
 			"Ô: #%d | Số viện: %d%s" % [int(p.get("position", 0)), (p.get("owned_tile_ids", []) as Array).size(), extra]
 		)
 
@@ -558,7 +543,7 @@ func _update_tile_inspector() -> void:
 			"• Giá mua: [b]%s[/b] | Phí nâng điểm: [b]%s[/b]\n" % [
 				_fmt(int(t.get("base_price", 0))), _fmt(int(t.get("upgrade_cost", 0)))
 			] +
-			"• Tiền phạt (Rent): [b][color=#ff9999]%s[/color][/b] | Thanh lý (50%%): [b]%s[/b]" % [
+			"• Tiền học liệu: [b][color=#ff9999]%s[/color][/b] | Thanh lý (50%%): [b]%s[/b]" % [
 				_fmt(int(t.get("rent", 0))), _fmt(int(t.get("sell_value", 0)))
 			]
 		)
@@ -603,6 +588,10 @@ func _build_steal_controls(act: Dictionary, min_bribe: int, max_bribe: int, tile
 	if cur_pid >= 0 and cur_pid < players.size():
 		bonus_pct = int(players[cur_pid].get("steal_bonus_percent", 0))
 
+	# Cap max_bribe at the exact amount needed for 100% steal chance so players never waste money
+	var needed_for_100: int = int(ceil(float(total_inv) * float(maxi(0, 100 - bonus_pct)) / 100.0))
+	max_bribe = maxi(min_bribe, mini(max_bribe, needed_for_100))
+
 	var panel := PanelContainer.new()
 	var st := StyleBoxFlat.new()
 	st.bg_color = Color(0.20, 0.16, 0.24)
@@ -630,7 +619,7 @@ func _build_steal_controls(act: Dictionary, min_bribe: int, max_bribe: int, tile
 	var slider := HSlider.new()
 	slider.min_value = min_bribe
 	slider.max_value = max_bribe
-	slider.step = 1000
+	slider.step = 1
 	slider.value = default_bribe
 	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hbox_input.add_child(slider)
@@ -638,7 +627,7 @@ func _build_steal_controls(act: Dictionary, min_bribe: int, max_bribe: int, tile
 	var spin := SpinBox.new()
 	spin.min_value = min_bribe
 	spin.max_value = max_bribe
-	spin.step = 5000
+	spin.step = 1  # step = 1 prevents snapping to 5001, 10001...
 	spin.value = default_bribe
 	spin.custom_minimum_size = Vector2(120, 0)
 	hbox_input.add_child(spin)
@@ -650,15 +639,12 @@ func _build_steal_controls(act: Dictionary, min_bribe: int, max_bribe: int, tile
 	var steal_btn := Button.new()
 	steal_btn.custom_minimum_size = Vector2(0, 40)
 
-	var current_bribe: Array[int] = [default_bribe]
-
 	var update_steal_ui: Callable = func(bribe_val: int) -> void:
-		current_bribe[0] = clampi(bribe_val, min_bribe, max_bribe)
-		var raw_pct: float = (float(current_bribe[0]) / float(total_inv)) * 100.0 + float(bonus_pct)
+		var raw_pct: float = (float(bribe_val) / float(total_inv)) * 100.0 + float(bonus_pct)
 		var win_pct: float = clampf(raw_pct, 0.0, 100.0)
-		var bonus_note: String = (" (+%d%% Phao thi)" % bonus_pct) if bonus_pct > 0 else ""
-		info_lbl.text = "🕵️ Cược Thi Hộ (Vốn ô: %s VND)%s" % [_fmt(total_inv), bonus_note]
-		steal_btn.text = "🔥 Cược %s VND  ➔  Tỷ lệ cướp: %.1f%%" % [_fmt(current_bribe[0]), win_pct]
+		var bonus_note: String = (" (đã cộng +%d%% Phao thi)" % bonus_pct) if bonus_pct > 0 else ""
+		info_lbl.text = "🕵️ Cược Thi Hộ (Vốn ô đất: %s VND)%s" % [_fmt(total_inv), bonus_note]
+		steal_btn.text = "🔥 Cược %s VND  ➔  Tỷ lệ cướp thành công: %.1f%%" % [_fmt(bribe_val), win_pct]
 
 	for target_pct in [25, 50, 75, 100]:
 		var qbtn := Button.new()
@@ -668,20 +654,22 @@ func _build_steal_controls(act: Dictionary, min_bribe: int, max_bribe: int, tile
 			var needed_pct: int = maxi(0, target_pct - bonus_pct)
 			var target_bribe: int = int(ceil(float(total_inv) * float(needed_pct) / 100.0))
 			target_bribe = clampi(target_bribe, min_bribe, max_bribe)
-			slider.set_value_no_signal(target_bribe)
-			spin.set_value_no_signal(target_bribe)
+			slider.value = target_bribe
+			spin.value = target_bribe
 			update_steal_ui.call(target_bribe)
 		)
 		quick_hbox.add_child(qbtn)
 
 	slider.value_changed.connect(func(v: float) -> void:
 		var iv: int = clampi(int(v), min_bribe, max_bribe)
-		spin.set_value_no_signal(iv)
+		if int(spin.value) != iv:
+			spin.set_value_no_signal(iv)
 		update_steal_ui.call(iv)
 	)
 	spin.value_changed.connect(func(v: float) -> void:
 		var iv: int = clampi(int(v), min_bribe, max_bribe)
-		slider.set_value_no_signal(iv)
+		if int(slider.value) != iv:
+			slider.set_value_no_signal(iv)
 		update_steal_ui.call(iv)
 	)
 
@@ -689,7 +677,7 @@ func _build_steal_controls(act: Dictionary, min_bribe: int, max_bribe: int, tile
 
 	steal_btn.pressed.connect(func() -> void:
 		var payload: Dictionary = act.duplicate()
-		payload["amount"] = current_bribe[0]
+		payload["amount"] = clampi(int(spin.value), min_bribe, max_bribe)
 		_send_player_action(payload)
 	)
 	vbox.add_child(steal_btn)
@@ -700,9 +688,9 @@ func _format_action_button(a_type: String, tid: int, tiles: Array, pending_tid: 
 	var p_tile: Dictionary = tiles[pending_tid] if (pending_tid >= 0 and pending_tid < tiles.size()) else {}
 	match a_type:
 		"roll_dice":
-			return "🎲 Đổ Xúc Xắc (Roll Dice)"
+			return "🎲 Đổ Xúc Xắc"
 		"pay_retake_fee":
-			return "💸 Nộp 50,000 VND Phí Thi Lại (Ra tù ngay)"
+			return "💸 Nộp 50,000 VND Phí Thi Lại (Ra phòng thi lại)"
 		"buy":
 			return "🏛️ Mua Viện Này (%s VND)" % _fmt(int(p_tile.get("base_price", 0)))
 		"upgrade":

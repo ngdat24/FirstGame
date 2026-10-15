@@ -104,10 +104,12 @@ static void testRentAndLiquidation() {
   GameState s = fresh();
   std::mt19937 rng(1);
   giveTile(s, 2, 0, Grade::A, 300000);
-  giveTile(s, 3, 1, Grade::B, 400000);  // sells for 200000
-  const long long rent = rentFor(s, s.tiles[2]);  // baseRent 11000 x 32 = 352000
-  CHECK(rent == 11000LL * 32);
-  s.players[1].cash = 200000;
+  const long long rent = rentFor(s, s.tiles[2]);  // baseRent 11000 x the grade-A factor
+  CHECK(rent == 11000LL * s.config.rentFactor[4]);
+  giveTile(s, 3, 1, Grade::B, 2 * rent);  // sells for exactly `rent`
+  const long long proceeds = s.tiles[3].totalInvested / 2;
+  CHECK(proceeds == rent);
+  s.players[1].cash = 1000;
   s.currentPlayerIndex = 1;
   const long long ownerBefore = s.players[0].cash;
 
@@ -123,7 +125,7 @@ static void testRentAndLiquidation() {
   CHECK(s.tiles[3].ownerId == -1 && s.tiles[3].grade == Grade::None &&
         s.tiles[3].totalInvested == 0);
   CHECK(s.players[1].ownedTileIds.empty());
-  CHECK(s.players[1].cash == 200000 + 200000 - rent);
+  CHECK(s.players[1].cash == 1000 + proceeds - rent);
   CHECK(s.players[0].cash == ownerBefore + rent);
   CHECK(!s.players[1].isBankrupt);
   CHECK(s.currentPlayerIndex == 1 && s.phase == Phase::AwaitRoll);  // doubles: rolls again
@@ -300,10 +302,10 @@ static void testExamSeason() {
   CHECK(s.players[0].cash == base + 3 * bonus);
 }
 
-static void testGameEndAtTempo64() {
+static void testGameEndAtMaxTempo() {
   GameState s = fresh();
   std::mt19937 rng(1);
-  s.currentTempo = 64;
+  s.currentTempo = s.config.maxTempo;
   s.currentPlayerIndex = 3;
   s.players[2].cash = 5000000;  // richest
   CHECK(applyRoll(s, 1, 2));
@@ -794,7 +796,7 @@ int main() {
   testAcademicWarning();
   testSpecialCorner();
   testExamSeason();
-  testGameEndAtTempo64();
+  testGameEndAtMaxTempo();
   testTempoAdvancesAfterEveryone();
   testIllegalActionsRejected();
   testDeckContentAndCycle();
