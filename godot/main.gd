@@ -140,6 +140,7 @@ class IsoBoardCanvas extends Control:
 				"C": h = 23.0
 				"B": h = 29.0
 				"A": h = 36.0
+				"A+": h = 44.0
 				_: h = 14.0
 
 		var t0: Vector2 = _iso(c, r, origin)
@@ -703,8 +704,11 @@ func _format_action_button(a_type: String, tid: int, tiles: Array, pending_tid: 
 			var bp: int = int(tiles[tid].get("base_price", 0)) if (tid >= 0 and tid < tiles.size()) else 0
 			return "🚀 Dịch chuyển + Mua %s (Phí 20k + %s)" % [t_name, _fmt(bp)]
 		"teleport_owned":
+			var gr: String = str(tiles[tid].get("grade", "")) if (tid >= 0 and tid < tiles.size()) else ""
+			if gr == "A+":
+				return "🏠 Dịch chuyển về %s (Đã đạt A+, chỉ tốn phí dịch chuyển)" % t_name
 			var uc: int = int(tiles[tid].get("upgrade_cost", 0)) if (tid >= 0 and tid < tiles.size()) else 0
-			return "🏠 Dịch chuyển + Nâng cấp %s (Phí 20k + %s)" % [t_name, _fmt(uc)]
+			return "🏠 Dịch chuyển + Nâng cấp %s (+%s VND)" % [t_name, _fmt(uc)]
 		"sell_tile":
 			var sell_val: int = int(tiles[tid].get("sell_value", 0)) if (tid >= 0 and tid < tiles.size()) else 0
 			return "🔨 Thanh lý %s (Thu về +%s VND)" % [t_name, _fmt(sell_val)]

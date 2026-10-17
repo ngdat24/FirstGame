@@ -10,31 +10,29 @@
 #include "tile.h"
 
 // All tunable numbers live here so simulations can change them without
-// touching the rules code. The economy numbers (game length, start cash, salary,
-// rent) are preset "48 A", chosen after the playtests and the balance simulations;
-// the rest are still placeholders.
+// touching the rules code.
 struct GameConfig {
   long long startCash = 700000;
-  long long salary = 75000;     // collected when passing/landing on Start
-  long long retakeFee = 50000;  // Retake Exam escape fee (voluntary or forced)
-  long long adminFee = 20000;   // Special Corner teleport fee
+  long long salary = 200000;     // collected when passing/landing on Start
+  long long retakeFee = 50000;   // Retake Exam escape fee (voluntary or forced)
+  long long adminFee = 50000;    // Special Corner teleport fee
   int jailTurns = 3;
-  int maxDoublesInRow = 3;      // this many doubles in one turn -> jail
-  int maxTempo = 48;            // game ends when this tempo concludes (3 semesters)
-  int tempoPerSemester = 16;    // 12 study tempos + 4 exam tempos
-  int examSeasonStart = 13;     // tempos 13..16 of each semester pay scholarships
-  int rentFactor[5] = {0, 3, 6, 12, 24};  // x baseRent, indexed by Grade: None,D,C,B,A
-  long long examBonusB = 20000;
+  int maxDoublesInRow = 3;       // this many doubles in one turn -> jail
+  int maxTempo = 48;             // game ends when this tempo concludes (8 semesters x 6 tempos)
+  int tempoPerSemester = 6;      // 5 study tempos + 1 exam tempo per semester
+  int examSeasonStart = 6;       // tempo 6 of each semester pays scholarships
+  int rentFactor[6] = {0, 3, 6, 9, 18, 40};  // x baseRent, indexed by Grade: None,D,C,B,A,APlus
   long long examBonusA = 50000;
-  bool cardsEnabled = true;     // false: the card tiles do nothing (for A/B simulations)
+  long long examBonusAPlus = 100000;
+  bool cardsEnabled = true;      // false: the card tiles do nothing (for A/B simulations)
 };
 
 // What the game is waiting for. Exactly one player (the current one) acts.
 enum class Phase {
-  AwaitRoll,           // roll dice (or pay the retake fee if in jail)
-  AwaitLandingChoice,  // decide about the tile in pendingTileId
-  AwaitCornerChoice,   // Special Corner: teleport somewhere or decline
-  AwaitLiquidation,    // owes money, must sell Institutes until covered
+  AwaitRoll,           // khoảng tgian roll
+  AwaitLandingChoice,  // khoảng tgian lựa chọn landing
+  AwaitCornerChoice,   // góc đặc biệt
+  AwaitLiquidation,    // khoảng tgian thanh lí
   GameOver
 };
 

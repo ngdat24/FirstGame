@@ -8,8 +8,9 @@
 
 namespace {
 
+// s = state, g = grade, msg = tin nhan, p = player, t = tiles
 // ---------------------------------------------------------------------------
-// Small helpers
+// Chạy log
 // ---------------------------------------------------------------------------
 void logEvent(GameState& s, const std::string& msg) {
   if (s.logEnabled) s.eventLog.push_back(msg);
@@ -23,6 +24,7 @@ const char* gradeName(Grade g) {
     case Grade::C: return "C";
     case Grade::B: return "B";
     case Grade::A: return "A";
+    case Grade::APlus: return "A+";
     default: return "-";
   }
 }
@@ -39,7 +41,7 @@ void removeOwned(Player& p, int tileId) {
       p.ownedTileIds.end());
 }
 
-// Tile goes back to the bank: unowned, no grade, no invested value.
+// bán đất
 void releaseTileToBank(GameState& s, Tile& t) {
   if (t.ownerId >= 0) removeOwned(s.players[t.ownerId], t.id);
   t.ownerId = -1;
@@ -47,7 +49,7 @@ void releaseTileToBank(GameState& s, Tile& t) {
   t.totalInvested = 0;
 }
 
-// Forward declarations (the turn flow is mutually recursive).
+// chạy trước hàm để gọi
 void endGame(GameState& s);
 void nextTurn(GameState& s);
 void finishLanding(GameState& s);
@@ -58,7 +60,7 @@ void chargeOrLiquidate(GameState& s, long long amount, int creditorId, int moveS
 void sendToRetakeExam(GameState& s, Player& p);
 
 // ---------------------------------------------------------------------------
-// Turn flow
+// Các lượt chơi
 // ---------------------------------------------------------------------------
 void endGame(GameState& s) {
   s.phase = Phase::GameOver;
@@ -67,8 +69,7 @@ void endGame(GameState& s) {
   s.winnerId = -1;
   long long bestWorth = -1;
   long long bestCash = -1;
-  // Ascending iteration + strict comparisons: ties go to higher cash, then
-  // to the lower player id.
+  // So sánh kĩ từ tiền tới tên
   for (const Player& p : s.players) {
     if (p.isBankrupt) continue;
     const long long w = calculateNetWorth(s, p);
@@ -79,16 +80,16 @@ void endGame(GameState& s) {
     }
   }
   if (s.winnerId >= 0)
-    logEvent(s, "GAME OVER. Winner: " + s.players[s.winnerId].name +
-                    " (net worth " + std::to_string(bestWorth) + ")");
+    logEvent(s, "Hết 4 năm. Winner: " + s.players[s.winnerId].name +
+                    " (với tổng giá trị học phần: " + std::to_string(bestWorth) + ")");
 }
 
 void nextTurn(GameState& s) {
-  if (countAlivePlayers(s) <= 1) {
+  if (countAlivePlayers(s) <= 1) {  // check số ng còn
     endGame(s);
     return;
   }
-  if (s.rentFreeTurnsLeft > 0) --s.rentFreeTurnsLeft;
+  if (s.rentFreeTurnsLeft > 0) --s.rentFreeTurnsLeft;  // trừ bài miễn tiền
 
   const int n = static_cast<int>(s.players.size());
   int idx = s.currentPlayerIndex;
@@ -96,10 +97,10 @@ void nextTurn(GameState& s) {
     bool crossedStart = false;  // did we step onto the tempo's first seat?
     do {
       idx = (idx + 1) % n;
-      if (idx == s.firstPlayerIndex) crossedStart = true;  // even if that player is expelled
+      if (idx == s.firstPlayerIndex) crossedStart = true;  // kể cả khi ng chơi đó đã cút vẫn phải check
     } while (s.players[idx].isBankrupt);
 
-    if (crossedStart) {  // back at the first seat: every living player has played this tempo
+    if (crossedStart) {  // quay 1 vòng
       if (s.currentTempo >= s.config.maxTempo) {
         s.currentPlayerIndex = idx;
         endGame(s);
@@ -111,10 +112,10 @@ void nextTurn(GameState& s) {
     }
 
     Player& next = s.players[idx];
-    if (next.skipTurns > 0) {  // a card made them lose this turn: pass over them
+    if (next.skipTurns > 0) {  // nếu có thẻ khiến ng đó bị mất lượt thì pass qua nó
       --next.skipTurns;
       if (s.rentFreeTurnsLeft > 0) --s.rentFreeTurnsLeft;
-      logEvent(s, next.name + " skips this turn.");
+      logEvent(s, next.name + " mất lượt đi này.");
       continue;
     }
     break;
@@ -138,7 +139,7 @@ void finishLanding(GameState& s) {
   }
   if (p.consecutiveDoubles > 0) {  // last roll was a (non-triple) double
     s.phase = Phase::AwaitRoll;
-    logEvent(s, p.name + " rolled doubles and rolls again.");
+    logEvent(s, p.name + " chó đỏ.");
   } else {
     nextTurn(s);
   }
@@ -154,11 +155,11 @@ void sendToRetakeExam(GameState& s, Player& p) {
   if (jail >= 0) p.position = jail;
   p.turnsInJail = s.config.jailTurns;
   p.consecutiveDoubles = 0;  // no extra roll after being sent to jail
-  logEvent(s, p.name + " is sent to the Retake Exam room.");
+  logEvent(s, p.name + " gặp Lê Minh Quân.");
 }
 
 // ---------------------------------------------------------------------------
-// Debt, liquidation, expulsion
+// 3 cơ chế chính: nợ - trả, thanh lí, cút
 // ---------------------------------------------------------------------------
 void settleDebt(GameState& s) {
   Player& p = currentPlayer(s);
@@ -182,7 +183,7 @@ void expel(GameState& s, Player& p) {
   p.isBankrupt = true;
   p.consecutiveDoubles = 0;
   p.turnsInJail = 0;
-  logEvent(s, p.name + " is EXPELLED (cannot cover the debt).");
+  logEvent(s, p.name + " cút");
   s.debt = PendingDebt{};
   nextTurn(s);
 }
@@ -201,19 +202,20 @@ void chargeOrLiquidate(GameState& s, long long amount, int creditorId, int moveS
     return;
   }
   s.phase = Phase::AwaitLiquidation;
-  logEvent(s, p.name + " owes " + std::to_string(amount) +
-                  " and must sell Institutes.");
+  logEvent(s, p.name + " nợ " + std::to_string(amount) +
+                  " và phải bỏ học phần này.");
 }
 
 // ---------------------------------------------------------------------------
 // Cards
 // ---------------------------------------------------------------------------
-int gradeWeight(Grade g) {  // used by the "per property" card: D=1, C=2, B=4, A=8
+int gradeWeight(Grade g) {  // hệ số ô đất: D=1, C=2, B=3, A=6, A+=15
   switch (g) {
     case Grade::D: return 1;
     case Grade::C: return 2;
-    case Grade::B: return 4;
-    case Grade::A: return 8;
+    case Grade::B: return 3;
+    case Grade::A: return 6;
+    case Grade::APlus: return 15;
     default: return 0;
   }
 }
@@ -237,18 +239,18 @@ int poorestAliveId(GameState& s) {
 }
 
 // Rolls are halved only when the player actually moves, so a failed roll in
-// the Retake Exam room or a triple-doubles jail does not waste the card.
+// Phòng thí nghiệm VLDC or a triple-doubles jail does not waste the card.
 int movementSteps(GameState& s, Player& p, int rolled) {
   if (!p.halveNextDice) return rolled;
   p.halveNextDice = false;
   const int halved = std::max(1, rolled / 2);
-  logEvent(s, p.name + "'s move is halved: " + std::to_string(rolled) + " -> " +
+  logEvent(s, p.name + " bị chia đôi bước đi: " + std::to_string(rolled) + " -> " +
                   std::to_string(halved) + ".");
   return halved;
 }
 
-// Draws one card for the current player and applies it. Ends with
-// finishLanding / chargeOrLiquidate / moveAndResolve like any other landing.
+// bốc 1 lá bất kì. Ends with
+// (hết lượt) / (trả hoặc thanh lý) / (di chuyển tới ô khác và kích hoạt nó) like any other landing.
 void drawAndApplyCard(GameState& s, Player& p) {
   const int idx = drawCardIndex(s.deck, s.deckRng);
   if (idx < 0) {
@@ -257,7 +259,7 @@ void drawAndApplyCard(GameState& s, Player& p) {
   }
   s.deck.discardPile.push_back(idx);
   const Card& c = s.deck.cards[idx];  // cards are never resized, so this stays valid
-  logEvent(s, p.name + " draws \"" + c.title + "\": " + c.description);
+  logEvent(s, p.name + " bốc được quả \"" + c.title + "\": " + c.description);
 
   switch (c.effectType) {
     case CardEffectType::MoneyFlat:
@@ -280,7 +282,7 @@ void drawAndApplyCard(GameState& s, Player& p) {
       const int poorest = poorestAliveId(s);
       if (poorest >= 0) {
         s.players[poorest].cash += c.value;
-        logEvent(s, s.players[poorest].name + " receives the subsidy of " +
+        logEvent(s, "Mọi người thấy " + s.players[poorest].name + " khổ quá nên tặng " +
                         std::to_string(c.value) + ".");
       }
       finishLanding(s);
@@ -343,7 +345,7 @@ bool handleRollPhase(GameState& s, Player& p, const Action& a, std::mt19937& rng
       if (p.turnsInJail <= 0 || p.cash < s.config.retakeFee) return false;
       p.cash -= s.config.retakeFee;
       p.turnsInJail = 0;
-      logEvent(s, p.name + " pays the retake fee and leaves the Retake Exam room.");
+      logEvent(s, p.name + " Trốn vldc II.");
       return true;  // still this player's AwaitRoll: they now roll normally
     default:
       return false;
@@ -372,19 +374,21 @@ bool handleLandingChoice(GameState& s, Player& p, const Action& a, std::mt19937&
       return true;
     case ActionType::PayRent:
       if (!opponents) return false;
-      if (s.rentFreeTurnsLeft > 0) {  // Rent Holiday card is active
-        logEvent(s, p.name + " owes no rent on " + t.name + " (Rent Holiday).");
+      if (s.rentFreeTurnsLeft > 0) {  // thẻ may mắn free money vẫn còn hiệu lực
+        logEvent(s, p.name + " được miễn tiền học liệu tại " + t.name + " (Cúp điện).");
         finishLanding(s);
         return true;
       }
       chargeOrLiquidate(s, rentFor(s, t), t.ownerId, 0);
       return true;
-    case ActionType::AttemptSteal:
-      if (!opponents) return false;
-      if (a.amount <= 0 || a.amount > p.cash) return false;  // cash only, no loans
+    case ActionType::AttemptSteal: {
+      if (!opponents || t.grade == Grade::APlus) return false;  // A+ is locked from stealing
+      const long long minB = std::max(1LL, rentFor(s, t));
+      if (a.amount < minB || a.amount > p.cash) return false;  // cash only, no loans
       attemptSteal(s, p, t, a.amount, rng);
       finishLanding(s);
       return true;
+    }
     default:
       return false;
   }
@@ -403,7 +407,7 @@ bool handleCornerChoice(GameState& s, Player& p, const Action& a) {
       if (p.cash < fee + t.basePrice) return false;
       p.cash -= fee;
       p.position = t.id;  // teleporting does NOT pass Start: no salary
-      logEvent(s, p.name + " teleports to " + t.name + ".");
+      logEvent(s, p.name + " muốn học ở " + t.name + ".");
       buyTile(s, p, t);
       finishLanding(s);
       return true;
@@ -412,11 +416,19 @@ bool handleCornerChoice(GameState& s, Player& p, const Action& a) {
       if (a.tileId < 0 || a.tileId >= static_cast<int>(s.tiles.size())) return false;
       Tile& t = s.tiles[a.tileId];
       if (t.type != TileType::Institute || t.ownerId != p.id) return false;
-      if (t.grade == Grade::A || t.grade == Grade::None) return false;
+      if (t.grade == Grade::None) return false;
+      if (t.grade == Grade::APlus) {
+        if (p.cash < fee) return false;
+        p.cash -= fee;
+        p.position = t.id;
+        logEvent(s, p.name + " muốn đi tới " + t.name + ".");
+        finishLanding(s);
+        return true;
+      }
       if (p.cash < fee + t.upgradeCost) return false;
       p.cash -= fee;
       p.position = t.id;
-      logEvent(s, p.name + " teleports to " + t.name + ".");
+      logEvent(s, p.name + " muốn học ở " + t.name + ".");
       upgradeTile(s, p, t);
       finishLanding(s);
       return true;
@@ -426,6 +438,7 @@ bool handleCornerChoice(GameState& s, Player& p, const Action& a) {
   }
 }
 
+// liquidation = thanh lí
 bool handleLiquidation(GameState& s, Player& p, const Action& a) {
   if (a.type != ActionType::SellTile) return false;
   if (a.tileId < 0 || a.tileId >= static_cast<int>(s.tiles.size())) return false;
@@ -433,7 +446,7 @@ bool handleLiquidation(GameState& s, Player& p, const Action& a) {
   if (t.type != TileType::Institute || t.ownerId != p.id) return false;
 
   const long long proceeds = t.totalInvested / 2;  // 50% of total invested value
-  logEvent(s, p.name + " sells " + t.name + " to the bank for " +
+  logEvent(s, p.name + " phải bỏ học " + t.name + " và bán học phần để trả " +
                   std::to_string(proceeds) + ".");
   releaseTileToBank(s, t);
   p.cash += proceeds;
@@ -458,7 +471,7 @@ GameState makeNewGame(int numPlayers, const std::vector<Tile>& board, unsigned s
   for (int i = 0; i < numPlayers; ++i) {
     Player p;
     p.id = i;
-    p.name = "Player " + std::to_string(i + 1);
+    p.name = "Thằng " + std::to_string(i + 1);
     p.cash = s.config.startCash;
     s.players.push_back(p);
   }
@@ -472,7 +485,7 @@ int drawCardIndex(CardDeck& d, std::mt19937& rng) {
   if (d.cards.empty()) return -1;
   if (d.drawPile.empty()) {
     if (!d.discardPile.empty()) {
-      d.drawPile.swap(d.discardPile);  // reshuffle what was already played
+      d.drawPile.swap(d.discardPile);  // tráo bài may mắn
     } else {
       for (int i = 0; i < static_cast<int>(d.cards.size()); ++i) d.drawPile.push_back(i);
     }
@@ -501,7 +514,7 @@ void movePlayer(GameState& s, Player& p, int steps) {
   p.position = (oldPos + steps) % boardSize;
   if (p.position < oldPos) {  // wrapped past (or onto) Start
     p.cash += s.config.salary;
-    logEvent(s, p.name + " passes Start and collects " +
+    logEvent(s, p.name + " đi hết 1 vòng trường quay lại Parabol và húp " +
                     std::to_string(s.config.salary) + ".");
   }
 }
@@ -519,19 +532,19 @@ bool buyTile(GameState& s, Player& p, Tile& t) {
   t.grade = Grade::D;
   t.totalInvested = t.basePrice;
   p.ownedTileIds.push_back(t.id);
-  logEvent(s, p.name + " registers for " + t.name + " (grade D) for " +
+  logEvent(s, p.name + " đăng kí học phần " + t.name + " với mức giá " +
                   std::to_string(t.basePrice) + ".");
   return true;
 }
 
 bool upgradeTile(GameState& s, Player& p, Tile& t) {
   if (t.type != TileType::Institute || t.ownerId != p.id) return false;
-  if (t.grade == Grade::None || t.grade == Grade::A) return false;
+  if (t.grade == Grade::None || t.grade == Grade::APlus) return false;
   if (p.cash < t.upgradeCost) return false;
   p.cash -= t.upgradeCost;
   t.totalInvested += t.upgradeCost;
   t.grade = static_cast<Grade>(static_cast<int>(t.grade) + 1);
-  logEvent(s, p.name + " upgrades " + t.name + " to grade " + gradeName(t.grade) + ".");
+  logEvent(s, p.name + " nâng trình " + t.name + " lên điểm " + gradeName(t.grade) + ".");
   return true;
 }
 
@@ -541,8 +554,8 @@ bool attemptSteal(GameState& s, Player& p, Tile& t, long long bribe, std::mt1993
   if (t.totalInvested > 0) rate = static_cast<double>(bribe) / t.totalInvested;
   if (p.stealBonusPercent > 0) {  // "Phao thi" card: one-shot bonus, used up either way
     rate += p.stealBonusPercent / 100.0;
-    logEvent(s, p.name + " uses a +" + std::to_string(p.stealBonusPercent) +
-                    "% steal bonus.");
+    logEvent(s, p.name + " dùng tiền để +" + std::to_string(p.stealBonusPercent) +
+                    "% lấy tỉ lệ cướp điểm.");
     p.stealBonusPercent = 0;
   }
   rate = std::min(1.0, rate);
@@ -555,11 +568,13 @@ bool attemptSteal(GameState& s, Player& p, Tile& t, long long bribe, std::mt1993
     removeOwned(s.players[t.ownerId], t.id);
     t.ownerId = p.id;  // grade and totalInvested are kept
     p.ownedTileIds.push_back(t.id);
-    logEvent(s, p.name + " STEALS " + t.name + " (bribe " + std::to_string(bribe) + ").");
+    logEvent(s, p.name + " húp " + t.name + ".");
   } else {
-    // Single penalty: the bribe is lost, no rent is owed.
-    logEvent(s, p.name + " is caught cheating on " + t.name + " and loses the bribe " +
-                    std::to_string(bribe) + ".");
+    if (t.ownerId >= 0 && t.ownerId < static_cast<int>(s.players.size())) {
+      s.players[t.ownerId].cash += bribe;
+    }
+    logEvent(s, p.name + " đã cố húp " + t.name + " nma không được và mất " +
+                    std::to_string(bribe) + " cho " + s.players[t.ownerId].name + ".");
   }
   return success;
 }
@@ -570,9 +585,10 @@ bool cornerHasOptions(const GameState& s, const Player& p) {
   for (const Tile& t : s.tiles) {
     if (t.type != TileType::Institute) continue;
     if (t.ownerId == -1 && t.basePrice <= avail) return true;
-    if (t.ownerId == p.id && t.grade != Grade::A && t.grade != Grade::None &&
-        t.upgradeCost <= avail)
-      return true;
+    if (t.ownerId == p.id && t.grade != Grade::None) {
+      if (t.grade == Grade::APlus) return true;
+      if (t.upgradeCost <= avail) return true;
+    }
   }
   return false;
 }
@@ -580,7 +596,7 @@ bool cornerHasOptions(const GameState& s, const Player& p) {
 void resolveLanding(GameState& s, Player& p, Tile& t) {
   switch (t.type) {
     case TileType::AcademicWarning:
-      logEvent(s, p.name + " lands on Academic Warning.");
+      logEvent(s, p.name + " bị áp giải đi thí nghiệm VLDC II.");
       sendToRetakeExam(s, p);
       finishLanding(s);
       return;
@@ -590,7 +606,7 @@ void resolveLanding(GameState& s, Player& p, Tile& t) {
         s.phase = Phase::AwaitCornerChoice;
         s.pendingTileId = t.id;
       } else {
-        logEvent(s, p.name + " lands on the Special Corner but has no valid option.");
+        logEvent(s, p.name + " thèm học nma không được học.");
         finishLanding(s);
       }
       return;
@@ -601,13 +617,19 @@ void resolveLanding(GameState& s, Player& p, Tile& t) {
           s.phase = Phase::AwaitLandingChoice;
           s.pendingTileId = t.id;
         } else {
+          logEvent(s, p.name + " không đủ tiền đăng kí " + t.name + " (" +
+                          std::to_string(t.basePrice) + ").");
           finishLanding(s);  // cannot afford it: nothing to decide
         }
       } else if (t.ownerId == p.id) {
-        if (t.grade != Grade::A && p.cash >= t.upgradeCost) {
+        if (t.grade != Grade::APlus && p.cash >= t.upgradeCost) {
           s.phase = Phase::AwaitLandingChoice;
           s.pendingTileId = t.id;
         } else {
+          if (t.grade != Grade::APlus) {
+            logEvent(s, p.name + " không đủ tiền nâng điểm " + t.name + " (" +
+                            std::to_string(t.upgradeCost) + ").");
+          }
           finishLanding(s);
         }
       } else {
@@ -637,12 +659,12 @@ void examSeasonPayout(GameState& s) {
     long long bonus = 0;
     for (int id : p.ownedTileIds) {
       const Grade g = s.tiles[id].grade;
+      if (g == Grade::APlus) bonus += s.config.examBonusAPlus;
       if (g == Grade::A) bonus += s.config.examBonusA;
-      if (g == Grade::B) bonus += s.config.examBonusB;
     }
     if (bonus > 0) {
       p.cash += bonus;
-      logEvent(s, p.name + " receives a scholarship of " + std::to_string(bonus) + ".");
+      logEvent(s, p.name + " húp hobo " + std::to_string(bonus) + ".");
     }
   }
 }
@@ -668,20 +690,19 @@ bool applyRoll(GameState& s, int d1, int d2) {
   s.lastDice = {d1, d2};
   const bool isDouble = (d1 == d2);
   const int steps = d1 + d2;
-  logEvent(s, p.name + " rolls " + std::to_string(d1) + " + " + std::to_string(d2) +
-                  (isDouble ? " (doubles)." : "."));
+  logEvent(s, p.name + " rolls " + std::to_string(d1) + " + " + std::to_string(d2));
 
-  // --- In the Retake Exam room: escape only with doubles (or forced fee) ----
+  // --- In the phòng thí nghiệm vldc II: escape only with doubles (or forced fee) ----
   if (p.turnsInJail > 0) {
     if (isDouble) {
       p.turnsInJail = 0;
       p.consecutiveDoubles = 0;  // escaping with doubles gives no extra roll
-      logEvent(s, p.name + " rolled doubles and escapes the Retake Exam room.");
+      logEvent(s, p.name + " thuộc lắp mạch và về sớm.");
       moveAndResolve(s, p, movementSteps(s, p, steps));
     } else {
       --p.turnsInJail;
       if (p.turnsInJail == 0) {
-        logEvent(s, p.name + " failed the retake 3 times: forced to pay the fee.");
+        logEvent(s, p.name + " ngu mất tiền.");
         chargeOrLiquidate(s, s.config.retakeFee, -1, movementSteps(s, p, steps));  // then moves
       } else {
         nextTurn(s);
@@ -694,8 +715,8 @@ bool applyRoll(GameState& s, int d1, int d2) {
   if (isDouble) {
     ++p.consecutiveDoubles;
     if (p.consecutiveDoubles >= s.config.maxDoublesInRow) {
-      logEvent(s, p.name + " rolled doubles " + std::to_string(p.consecutiveDoubles) +
-                      " times in a row.");
+      logEvent(s, p.name + " quay tay " + std::to_string(p.consecutiveDoubles) +
+                      " nhiều lần.");
       sendToRetakeExam(s, p);  // also resets consecutiveDoubles
       finishLanding(s);        // -> next player
       return true;
@@ -732,15 +753,16 @@ LegalActions getLegalActions(const GameState& s) {
         if (t.type == TileType::Institute && p.cash >= t.basePrice) add(ActionType::Buy);
         add(ActionType::Decline);
       } else if (t.ownerId == p.id) {
-        if (t.grade != Grade::None && t.grade != Grade::A && p.cash >= t.upgradeCost)
+        if (t.grade != Grade::None && t.grade != Grade::APlus && p.cash >= t.upgradeCost)
           add(ActionType::Upgrade);
         add(ActionType::Decline);
-      } else {  // somebody else's tile: pay rent or try to steal, no way to ignore it
+      } else {  // somebody else's tile: pay rent or try to steal (unless locked at A+)
         add(ActionType::PayRent);
-        if (p.cash >= 1) {
+        const long long minB = std::max(1LL, rentFor(s, t));
+        if (t.grade != Grade::APlus && p.cash >= minB) {
           add(ActionType::AttemptSteal);
-          out.minBribe = 1;
-          out.maxBribe = p.cash;  // cash only, no loans
+          out.minBribe = minB;
+          out.maxBribe = p.cash;
         }
       }
       break;
@@ -753,9 +775,12 @@ LegalActions getLegalActions(const GameState& s) {
         if (t.type != TileType::Institute) continue;
         if (t.ownerId == -1 && p.cash >= fee + t.basePrice)
           add(ActionType::TeleportUnowned, t.id);
-        else if (t.ownerId == p.id && t.grade != Grade::None && t.grade != Grade::A &&
-                 p.cash >= fee + t.upgradeCost)
-          add(ActionType::TeleportOwned, t.id);
+        else if (t.ownerId == p.id && t.grade != Grade::None) {
+          if (t.grade == Grade::APlus && p.cash >= fee)
+            add(ActionType::TeleportOwned, t.id);
+          else if (t.grade != Grade::APlus && p.cash >= fee + t.upgradeCost)
+            add(ActionType::TeleportOwned, t.id);
+        }
       }
       break;
     }

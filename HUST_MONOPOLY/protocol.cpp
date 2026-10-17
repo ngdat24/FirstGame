@@ -49,6 +49,7 @@ const char* gradeName(Grade g) {
     case Grade::C: return "C";
     case Grade::B: return "B";
     case Grade::A: return "A";
+    case Grade::APlus: return "A+";
   }
   return "none";
 }
@@ -238,9 +239,10 @@ json rulesJson() {
                 {"tempo_per_semester", c.tempoPerSemester},
                 {"exam_season_start", c.examSeasonStart},
                 {"exam_bonus_a", c.examBonusA},
-                {"exam_bonus_b", c.examBonusB},
+                {"exam_bonus_a_plus", c.examBonusAPlus},
                 {"rent_factor", {{"D", c.rentFactor[1]}, {"C", c.rentFactor[2]},
-                                 {"B", c.rentFactor[3]}, {"A", c.rentFactor[4]}}}};
+                                 {"B", c.rentFactor[3]}, {"A", c.rentFactor[4]},
+                                 {"A+", c.rentFactor[5]}}}};
   r["cards"] = cards;
   return r;
 }
@@ -282,7 +284,7 @@ json cmdNewGame(Engine& e, const json& req) {
   e.state.logEnabled = true;
   e.hasGame = true;
   return stateResponse(
-      e, {e.state.players[e.state.firstPlayerIndex].name + " goes first."});
+      e, {e.state.players[e.state.firstPlayerIndex].name + " đi đầu tiên."});
 }
 
 json cmdAction(Engine& e, const json& req) {
