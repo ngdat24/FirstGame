@@ -20,9 +20,6 @@ inline CardDeck makeCardDeck() {
   };
 
   // --- Anti-snowball cards -------------------------------------------------
-  add("Thanh tra đồ án đột xuất",
-      "Nộp 30.000 VND x bậc điểm cho mỗi Institute đang sở hữu (D=1, C=2, B=4, A=8).",
-      CardEffectType::MoneyPerProperty, 30000);
   add("Quỹ khuyến học cựu sinh viên",
       "Người có tổng tài sản thấp nhất bàn nhận 300.000 VND.",
       CardEffectType::PovertySubsidy, 300000);
@@ -34,17 +31,20 @@ inline CardDeck makeCardDeck() {
       CardEffectType::StealBuff, 25);
 
   // --- Tempo / jail cards --------------------------------------------------
-  add("Quên điểm danh giải tích",
+  add("Quên điểm danh",
       "Nhận cảnh cáo học tập: vào phòng Thi lại.",
       CardEffectType::GoToJail, 0);
   add("Đi chơi với bạn gái quên học",
       "Lượt kế tiếp của bạn bị bỏ qua.",
       CardEffectType::SkipTurn, 0);
-  add("Đi học bù ca 4 kẹt xe",
-      "Lần di chuyển kế tiếp chỉ đi được một nửa số bước (làm tròn xuống).",
+  add("Mún học nma kẹt xe",
+      "Lần di chuyển kế tiếp chỉ đi được một nửa số bước",
       CardEffectType::HalveNextDice, 0);
 
   // --- Money cards ---------------------------------------------------------
+  add("Học tốt",
+      "Nộp 10.000 VND x bậc điểm cho mỗi Institute đang sở hữu (D=1, C=2, B=3, A=6, A+=15).",
+      CardEffectType::MoneyPerProperty, 10000);
   add("Đóng tiền học phí kỳ phụ",
       "Nộp 150.000 VND học phí.",
       CardEffectType::MoneyFlat, -150000);

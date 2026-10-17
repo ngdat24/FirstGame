@@ -39,7 +39,8 @@ json ask(Engine& engine, const json& request) {
 std::string nextGrade(const std::string& g) {
   if (g == "D") return "C";
   if (g == "C") return "B";
-  return "A";
+  if (g == "B") return "A";
+  return "A+";
 }
 
 std::string playerName(const json& snap, int id) {
@@ -123,13 +124,17 @@ std::string describe(const json& act, const json& snap, const json& rules) {
   if (type == "attempt_steal" && pt)
     return "Try to steal it with a bribe (" + money(snap["legal"]["min_bribe"]) + " to " +
            money(snap["legal"]["max_bribe"]) + "); chance = bribe / " +
-           money((*pt)["total_invested"]) + ", lost if you fail";
+           money((*pt)["total_invested"]) + ", paid to owner if you fail";
   if (type == "teleport_unowned")
     return "Teleport to " + tileOf(act)["name"].get<std::string>() + " and buy it for " +
            money(tileOf(act)["base_price"]) + " (+" + money(rules["admin_fee"]) + " fee)";
-  if (type == "teleport_owned")
+  if (type == "teleport_owned") {
+    if (tileOf(act)["grade"] == "A+")
+      return "Teleport to " + tileOf(act)["name"].get<std::string>() + " (already A+, " +
+             money(rules["admin_fee"]) + " fee)";
     return "Teleport to " + tileOf(act)["name"].get<std::string>() + " and upgrade it for " +
            money(tileOf(act)["upgrade_cost"]) + " (+" + money(rules["admin_fee"]) + " fee)";
+  }
   if (type == "sell_tile")
     return "Sell " + tileOf(act)["name"].get<std::string>() + " to the bank for " +
            money(tileOf(act)["sell_value"]);

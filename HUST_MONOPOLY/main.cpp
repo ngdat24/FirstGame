@@ -28,7 +28,7 @@ bool chance(std::mt19937& rng, double p) {
 }
 
 // A deliberately simple bot: buys/upgrades while keeping a cash reserve,
-// occasionally gambles on a 50% steal, sells its cheapest tile when in debt.
+// occasionally gambles on a steal, sells its cheapest tile when in debt.
 Action botChoose(const GameState& s, std::mt19937& rng) {
   const Player& p = s.players[s.currentPlayerIndex];
   const GameConfig& cfg = s.config;
@@ -49,10 +49,11 @@ Action botChoose(const GameState& s, std::mt19937& rng) {
       if (t.ownerId == -1) {
         a.type = (p.cash - t.basePrice >= reserve) ? ActionType::Buy : ActionType::Decline;
       } else if (t.ownerId == p.id) {
-        a.type = (p.cash - t.upgradeCost >= reserve) ? ActionType::Upgrade : ActionType::Decline;
+        a.type = (t.grade != Grade::APlus && p.cash - t.upgradeCost >= reserve) ? ActionType::Upgrade : ActionType::Decline;
       } else {
-        const long long bribe = t.totalInvested / 2;  // ~50% success chance
-        if (bribe > 0 && p.cash - bribe >= reserve && chance(rng, g_stealChance)) {
+        const long long minB = std::max(1LL, rentFor(s, t));
+        const long long bribe = std::max<long long>(minB, t.totalInvested / 2);
+        if (t.grade != Grade::APlus && bribe >= minB && p.cash - bribe >= reserve && chance(rng, g_stealChance)) {
           a.type = ActionType::AttemptSteal;
           a.amount = bribe;
         } else {
@@ -72,7 +73,7 @@ Action botChoose(const GameState& s, std::mt19937& rng) {
           a.tileId = t.id;
           break;
         }
-        if (t.ownerId == p.id && t.grade != Grade::A && t.upgradeCost <= avail) {
+        if (t.ownerId == p.id && t.grade != Grade::None && t.grade != Grade::APlus && t.upgradeCost <= avail) {
           a.type = ActionType::TeleportOwned;
           a.tileId = t.id;
           break;
@@ -195,14 +196,14 @@ struct Stats {
   long long legalMismatches = 0;  // getLegalActions disagreeing with applyAction (must be 0)
   long long legalChecked = 0;
   int gamesWithExpulsion = 0;
-  double endTiles[5] = {0, 0, 0, 0, 0};  // owned Institutes at the end, indexed by Grade
+  double endTiles[6] = {0, 0, 0, 0, 0, 0};  // owned Institutes at the end, indexed by Grade (None..APlus)
   int gamesWithGradeA = 0;
   double startWorthSum = 0;   // total net worth of all players at the start of each game
   double endWorthSum = 0;     // ...and at the end (expelled players count as 0)
   long long rollsSum = 0;     // dice rolls (quick, no thinking)
   long long decisionsSum = 0; // real choices: non-roll actions with more than one legal option
   int midgameGames = 0;       // games still running at the halfway tempo
-  int midgameLeaderWon = 0;   // ...where the Tempo-32 net-worth leader won
+  int midgameLeaderWon = 0;   // ...where the halfway net-worth leader won
 };
 
 }  // namespace
@@ -286,7 +287,7 @@ int main(int argc, char** argv) {
   int rentMultiplier = 1;
   bool cardsEnabled = true;     // --nocards turns the card tiles into no-ops
   bool fuzz = false;
-  bool flatRent = false;        // rent factors 1,2,3,4 instead of 1,2,4,8
+  bool flatRent = false;        // rent factors 1,2,3,4,5
   double examBonusScale = 1.0;  // 0 disables Exam Season bonuses
   int maxTempoOverride = -1;    // --maxtempo N: shorter or longer game
   int rentPercent = 100;        // --rentpct P: rent factors x P/100 (100 = current preset)
@@ -321,13 +322,13 @@ int main(int argc, char** argv) {
     if (cashOverride >= 0)
       for (Player& p : state.players) p.cash = cashOverride;
     if (flatRent) {
-      const int flat[5] = {0, 1, 2, 3, 4};
-      for (int i = 0; i < 5; ++i) state.config.rentFactor[i] = flat[i];
+      const int flat[6] = {0, 1, 2, 3, 4, 5};
+      for (int i = 0; i < 6; ++i) state.config.rentFactor[i] = flat[i];
     }
     for (int& f : state.config.rentFactor) f = f * rentMultiplier * rentPercent / 100;
     if (maxTempoOverride > 0) state.config.maxTempo = maxTempoOverride;
     state.config.examBonusA = static_cast<long long>(state.config.examBonusA * examBonusScale);
-    state.config.examBonusB = static_cast<long long>(state.config.examBonusB * examBonusScale);
+    state.config.examBonusAPlus = static_cast<long long>(state.config.examBonusAPlus * examBonusScale);
 
     long long actions = 0;
     int midLeader = -1;  // net-worth leader at the halfway tempo
@@ -386,7 +387,7 @@ int main(int argc, char** argv) {
       for (const Tile& t : state.tiles) {
         if (t.ownerId < 0) continue;
         st.endTiles[static_cast<int>(t.grade)] += 1;
-        if (t.grade == Grade::A) hasA = true;
+        if (t.grade == Grade::A || t.grade == Grade::APlus) hasA = true;
       }
       if (hasA) ++st.gamesWithGradeA;
     }
@@ -420,8 +421,9 @@ int main(int argc, char** argv) {
   std::cout << "Money supply growth:    x" << st.endWorthSum / st.startWorthSum
             << "  (total net worth at the end / at the start)\n";
   std::cout << "Owned tiles at the end: D " << st.endTiles[1] / n << ", C " << st.endTiles[2] / n
-            << ", B " << st.endTiles[3] / n << ", A " << st.endTiles[4] / n << "  (average per game; "
-            << 100.0 * st.gamesWithGradeA / n << "% of games end with a grade-A tile)\n";
+            << ", B " << st.endTiles[3] / n << ", A " << st.endTiles[4] / n
+            << ", A+ " << st.endTiles[5] / n << "  (average per game; "
+            << 100.0 * st.gamesWithGradeA / n << "% of games end with an A/A+ tile)\n";
   std::cout << "Per game:               " << st.rollsSum / n << " rolls, " << st.decisionsSum / n
             << " real decisions\n";
   std::cout << "Ended before tempo " << maxTempoShown << ":  " << 100.0 * st.endedEarly / n << "%\n";

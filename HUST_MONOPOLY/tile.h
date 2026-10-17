@@ -11,13 +11,14 @@ enum class TileType {
   Other             // placeholder (future cards / events)
 };
 
-// Numeric order matters: None=0, D=1, C=2, B=3, A=4 (used to index rentFactor).
+// Numeric order matters: None=0, D=1, C=2, B=3, A=4, A+ = 5(used to index rentFactor).
 enum class Grade {
   None,
   D,
   C,
   B,
-  A
+  A,
+  APlus
 };
 
 struct Tile {

@@ -171,15 +171,24 @@ static void testStealFailureSinglePenaltyAndValidation() {
   CHECK(applyRoll(s, 1, 1));
   const long long ownerCash = s.players[0].cash;
 
-  CHECK(!applyAction(s, act(ActionType::AttemptSteal, 1, 0), rng));         // bribe must be > 0
+  const long long minB = rentFor(s, s.tiles[2]);
+  CHECK(!applyAction(s, act(ActionType::AttemptSteal, 1, 0), rng));         // bribe must be >= rent
+  CHECK(!applyAction(s, act(ActionType::AttemptSteal, 1, minB - 1), rng));  // below rent
   CHECK(!applyAction(s, act(ActionType::AttemptSteal, 1, -5), rng));        // negative
   CHECK(!applyAction(s, act(ActionType::AttemptSteal, 1, 2000000), rng));   // more than cash
   CHECK(s.phase == Phase::AwaitLandingChoice);                              // nothing changed
 
-  CHECK(applyAction(s, act(ActionType::AttemptSteal, 1, 1), rng));  // ~0.0007% chance
-  CHECK(s.tiles[2].ownerId == 0);                  // steal failed
-  CHECK(s.players[1].cash == s.config.startCash - 1);  // lost the bribe only
-  CHECK(s.players[0].cash == ownerCash);           // and owes NO rent
+  CHECK(applyAction(s, act(ActionType::AttemptSteal, 1, minB), rng));
+  CHECK(s.tiles[2].ownerId == 0);                      // steal failed
+  CHECK(s.players[1].cash == s.config.startCash - minB);  // lost the bribe
+  CHECK(s.players[0].cash == ownerCash + minB);        // failed bribe paid to owner
+
+  // A+ tiles are locked and cannot be stolen.
+  GameState locked = fresh();
+  giveTile(locked, 2, 0, Grade::APlus, 350000);
+  locked.currentPlayerIndex = 1;
+  CHECK(applyRoll(locked, 1, 1));
+  CHECK(!applyAction(locked, act(ActionType::AttemptSteal, 1, 500000), rng));
 }
 
 static void testJailRules() {
@@ -258,7 +267,7 @@ static void testSpecialCorner() {
   CHECK(s.players[0].cash == start - s.config.adminFee - s.tiles[26].basePrice);
   CHECK(s.currentPlayerIndex == 1);
 
-  // Teleport to an owned institute: upgrades it.
+  // Teleport to an owned institute: upgrades it (up to A+), or just moves if already A+.
   GameState u = fresh();
   giveTile(u, 7, 0, Grade::D, u.tiles[7].basePrice);
   u.players[0].position = 20;
@@ -266,6 +275,16 @@ static void testSpecialCorner() {
   CHECK(applyAction(u, act(ActionType::TeleportOwned, 0, 0, 7), rng));
   CHECK(u.tiles[7].grade == Grade::C);
   CHECK(u.players[0].position == 7);
+
+  GameState ap = fresh();
+  giveTile(ap, 7, 0, Grade::APlus, 350000);
+  ap.players[0].position = 20;
+  const long long beforeAp = ap.players[0].cash;
+  resolveLanding(ap, ap.players[0], ap.tiles[20]);
+  CHECK(applyAction(ap, act(ActionType::TeleportOwned, 0, 0, 7), rng));
+  CHECK(ap.tiles[7].grade == Grade::APlus);
+  CHECK(ap.players[0].position == 7);
+  CHECK(ap.players[0].cash == beforeAp - ap.config.adminFee);
 
   // Nothing affordable: the tile is a no-op and the turn simply ends.
   GameState n = fresh();
@@ -279,25 +298,25 @@ static void testSpecialCorner() {
 
 static void testExamSeason() {
   GameState s = fresh();
-  giveTile(s, 2, 0, Grade::A, 300000);
-  giveTile(s, 3, 0, Grade::B, 200000);
-  giveTile(s, 4, 0, Grade::C, 200000);  // C and D earn nothing
+  giveTile(s, 2, 0, Grade::APlus, 350000);
+  giveTile(s, 3, 0, Grade::A, 300000);
+  giveTile(s, 4, 0, Grade::B, 200000);  // B, C and D earn nothing
   const long long base = s.players[0].cash;
-  const long long bonus = s.config.examBonusA + s.config.examBonusB;
+  const long long bonus = s.config.examBonusA + s.config.examBonusAPlus;
 
-  s.currentTempo = 12;
+  s.currentTempo = 5;
   examSeasonPayout(s);
   CHECK(s.players[0].cash == base);
-  s.currentTempo = 13;
+  s.currentTempo = 6;
   examSeasonPayout(s);
   CHECK(s.players[0].cash == base + bonus);
-  s.currentTempo = 16;
+  s.currentTempo = 12;
   examSeasonPayout(s);
   CHECK(s.players[0].cash == base + 2 * bonus);
-  s.currentTempo = 17;  // first week of the second semester
+  s.currentTempo = 13;  // first tempo of the next semester
   examSeasonPayout(s);
   CHECK(s.players[0].cash == base + 2 * bonus);
-  s.currentTempo = 29;  // week 13 of the second semester
+  s.currentTempo = 18;  // exam tempo of the third semester
   examSeasonPayout(s);
   CHECK(s.players[0].cash == base + 3 * bonus);
 }
@@ -448,10 +467,10 @@ static void testCardMoney() {
 static void testCardPerProperty() {
   GameState s = fresh();
   stackDeck(s, findCard(s, CardEffectType::MoneyPerProperty));
-  giveTile(s, 2, 0, Grade::A, 300000);  // weight 8
+  giveTile(s, 2, 0, Grade::A, 300000);  // weight 6
   giveTile(s, 3, 0, Grade::D, 120000);  // weight 1
   landOnCardTile(s);
-  CHECK(s.players[0].cash == s.config.startCash - 30000LL * (8 + 1));
+  CHECK(s.players[0].cash == s.config.startCash - 10000LL * (6 + 1));
 
   GameState poor = fresh();  // owns nothing -> pays nothing
   stackDeck(poor, findCard(poor, CardEffectType::MoneyPerProperty));
@@ -577,23 +596,25 @@ static void testCardStealBuff() {
   landOnCardTile(s);
   CHECK(s.players[0].stealBonusPercent == 25);
 
-  // A 100% bonus makes even a 1-VND bribe certain, and the bonus is consumed.
+  // A 100% bonus makes even a minimum-bribe steal certain, and the bonus is consumed.
   GameState t = fresh();
   giveTile(t, 2, 0, Grade::B, 150000);
   t.currentPlayerIndex = 1;
   t.players[1].stealBonusPercent = 100;
   CHECK(applyRoll(t, 1, 1));
-  CHECK(applyAction(t, act(ActionType::AttemptSteal, 1, 1), rng));
+  const long long minBt = rentFor(t, t.tiles[2]);
+  CHECK(applyAction(t, act(ActionType::AttemptSteal, 1, minBt), rng));
   CHECK(t.tiles[2].ownerId == 1);
   CHECK(t.players[1].stealBonusPercent == 0);
 
   // A failed attempt also uses it up.
   GameState u = fresh();
-  giveTile(u, 2, 0, Grade::B, 150000);
+  giveTile(u, 2, 0, Grade::D, 150000);
   u.currentPlayerIndex = 1;
-  u.players[1].stealBonusPercent = 1;  // 1 / 150000 + 1% is still a long shot
+  u.players[1].stealBonusPercent = 1;
   CHECK(applyRoll(u, 1, 1));
-  CHECK(applyAction(u, act(ActionType::AttemptSteal, 1, 1), rng));
+  const long long minBu = rentFor(u, u.tiles[2]);
+  CHECK(applyAction(u, act(ActionType::AttemptSteal, 1, minBu), rng));
   CHECK(u.players[1].stealBonusPercent == 0);
 }
 
@@ -737,7 +758,7 @@ static void testLegalActions() {
   CHECK(l.actions.size() == 2 && hasAction(l, ActionType::PayRent) &&
         hasAction(l, ActionType::AttemptSteal));
   CHECK(!hasAction(l, ActionType::Decline) && !hasAction(l, ActionType::Buy));
-  CHECK(l.minBribe == 1 && l.maxBribe == c.players[0].cash);
+  CHECK(l.minBribe == rentFor(c, c.tiles[3]) && l.maxBribe == c.players[0].cash);
   CHECK(allListedAccepted(c));
   c.players[0].cash = 0;
   l = getLegalActions(c);
