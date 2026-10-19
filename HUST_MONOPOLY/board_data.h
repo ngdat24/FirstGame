@@ -7,8 +7,7 @@
 
 // Placeholder 40-tile board. Layout:
 //   0 Start | 10 Retake Exam (jail) | 20 Special Corner | 30 Academic Warning
-//   5, 15, 25, 35 = "Other" tiles: landing on one draws a card (see card_data.h)
-//   everything else = Institute (32 of them)
+//   4, 13, 25, 34 = Auction; 15, 35 = cards; remaining 30 = Institutes
 // Prices, upgrade costs and rents are PLACEHOLDERS to be tuned by simulation.
 inline std::vector<Tile> makeBoard() {
   static const char* kNamed[] = {
@@ -23,6 +22,9 @@ inline std::vector<Tile> makeBoard() {
   for (int i = 0; i < 40; ++i) {
     Tile& t = tiles[i];
     t.id = i;
+    // Preserve prices/names of surviving Institutes from the original board.
+    const int originalIndex = instituteIndex;
+    if (i % 10 != 0 && i % 10 != 5) ++instituteIndex;
 
     if (i == 0) {
       t.type = TileType::Start;
@@ -36,17 +38,20 @@ inline std::vector<Tile> makeBoard() {
     } else if (i == 30) {
       t.type = TileType::AcademicWarning;
       t.name = "Academic Warning";
-    } else if (i % 10 == 5) {
+    } else if (i == 4 || i == 13 || i == 25 || i == 34) {
+      t.type = TileType::Auction;
+      t.name = i == 4 ? "Quảng Trường C1" : i == 13 ? "Hội Trường C2" :
+               i == 25 ? "Thư Viện Tạ Quang Bửu" : "Sân Vận Động Bách Khoa";
+    } else if (i == 15 || i == 35) {
       t.type = TileType::Other;
       t.name = "Chance / Bad Luck (Cơ hội / Vận xui)";
     } else {
       t.type = TileType::Institute;
-      t.name = (instituteIndex < 3) ? kNamed[instituteIndex]
-                                    : "Institute " + std::to_string(instituteIndex + 1);
-      t.basePrice = 100000 + 10000 * instituteIndex;  // 100k .. 410k
+      t.name = i == 5 ? "Viện Cơ Sở" : (originalIndex < 3) ? kNamed[originalIndex]
+                                    : "Institute " + std::to_string(originalIndex + 1);
+      t.basePrice = i == 5 ? 120000 : 100000 + 10000 * originalIndex;
       t.upgradeCost = t.basePrice / 2;
       t.baseRent = t.basePrice / 10;                   // rent at grade D
-      ++instituteIndex;
     }
   }
   return tiles;

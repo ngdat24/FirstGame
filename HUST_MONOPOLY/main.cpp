@@ -10,18 +10,28 @@
 //   ./sim --flatrent --exambonus 0 --stealprob 0.4  -> experiment flags
 #include <algorithm>
 #include <array>
+#include <cerrno>
+#include <cmath>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <random>
+#include <stdexcept>
 #include <string>
 
 #include "GameLogic.h"
 #include "board_data.h"
+#include "simulation_metrics.h"
 
 namespace {
 
 double g_stealChance = 0.15;  // how often the bot tries to steal instead of paying rent
+
+struct BotConfig {
+  long long reserve = 100000;
+  bool upgradeFirst = false;
+  bool highestGrade = false;  // default retains buying D / one-step upgrades for comparisons
+};
 
 bool chance(std::mt19937& rng, double p) {
   return std::uniform_real_distribution<double>(0.0, 1.0)(rng) < p;
@@ -29,10 +39,22 @@ bool chance(std::mt19937& rng, double p) {
 
 // A deliberately simple bot: buys/upgrades while keeping a cash reserve,
 // occasionally gambles on a steal, sells its cheapest tile when in debt.
-Action botChoose(const GameState& s, std::mt19937& rng) {
+Action botChoose(const GameState& s, std::mt19937& rng, const BotConfig& bot = BotConfig{}) {
   const Player& p = s.players[s.currentPlayerIndex];
   const GameConfig& cfg = s.config;
-  const long long reserve = 100000;
+  const long long reserve = bot.reserve;
+  const LegalActions legal = getLegalActions(s);
+  const auto investment = [&](ActionType type, int tileId = -1) {
+    Action selected{ActionType::Decline, p.id};
+    for (const Action& candidate : legal.actions) {
+      if (candidate.type != type || candidate.tileId != tileId) continue;
+      const long long cost = investmentActionCost(s, candidate);
+      if (cost >= 0 && cost <= p.cash - reserve &&
+          (selected.type == ActionType::Decline || (bot.highestGrade && candidate.targetGrade > selected.targetGrade)))
+        selected = candidate;
+    }
+    return selected;
+  };
   Action a;
   a.playerId = p.id;
 
@@ -46,10 +68,15 @@ Action botChoose(const GameState& s, std::mt19937& rng) {
 
     case Phase::AwaitLandingChoice: {
       const Tile& t = s.tiles[s.pendingTileId];
+      if (t.type == TileType::Auction) {
+        if (p.cash >= t.basePrice && countOwnedAuctions(s, p.id) == 3)
+          return {ActionType::Buy, p.id};
+        return investment(ActionType::Buy);
+      }
       if (t.ownerId == -1) {
-        a.type = (p.cash - t.basePrice >= reserve) ? ActionType::Buy : ActionType::Decline;
+        return investment(ActionType::Buy);
       } else if (t.ownerId == p.id) {
-        a.type = (t.grade != Grade::APlus && p.cash - t.upgradeCost >= reserve) ? ActionType::Upgrade : ActionType::Decline;
+        return investment(ActionType::Upgrade);
       } else {
         const long long minB = (3LL * rentFor(s, t) + 1) / 2;
         const long long fullB = (3LL * t.totalInvested + 1) / 2;
@@ -65,20 +92,25 @@ Action botChoose(const GameState& s, std::mt19937& rng) {
     }
 
     case Phase::AwaitCornerChoice: {
-      const long long avail = p.cash - cfg.adminFee - reserve;
       a.type = ActionType::Decline;
+      if (bot.upgradeFirst) {
+        int best = -1;
+        Action selected = a;
+        for (const Tile& t : s.tiles) {
+          if (t.ownerId != p.id || t.grade == Grade::APlus) continue;
+          const Action candidate = investment(ActionType::TeleportOwned, t.id);
+          if (candidate.type != ActionType::Decline && (best < 0 || t.grade > s.tiles[best].grade)) {
+            best = t.id;
+            selected = candidate;
+          }
+        }
+        if (best >= 0) return selected;
+      }
       for (const Tile& t : s.tiles) {
         if (t.type != TileType::Institute) continue;
-        if (t.ownerId == -1 && t.basePrice <= avail) {
-          a.type = ActionType::TeleportUnowned;
-          a.tileId = t.id;
-          break;
-        }
-        if (t.ownerId == p.id && t.grade != Grade::None && t.grade != Grade::APlus && t.upgradeCost <= avail) {
-          a.type = ActionType::TeleportOwned;
-          a.tileId = t.id;
-          break;
-        }
+        if (t.ownerId == -1) a = investment(ActionType::TeleportUnowned, t.id);
+        else if (t.ownerId == p.id && t.grade != Grade::APlus) a = investment(ActionType::TeleportOwned, t.id);
+        if (a.type != ActionType::Decline) break;
       }
       return a;
     }
@@ -113,6 +145,7 @@ unsigned long long stateDigest(const GameState& s) {
   h = mixHash(h, s.debt.amount);
   h = mixHash(h, s.debt.creditorId);
   h = mixHash(h, s.debt.moveSteps);
+  h = mixHash(h, s.debt.auctionTileId);
   h = mixHash(h, s.winnerId);
   h = mixHash(h, s.rentFreeTurnsLeft);
   h = mixHash(h, s.lastDice.first);
@@ -131,6 +164,8 @@ unsigned long long stateDigest(const GameState& s) {
     h = mixHash(h, -1);
   }
   for (const Tile& t : s.tiles) {
+    h = mixHash(h, t.basePrice);
+    h = mixHash(h, t.baseRent);
     h = mixHash(h, t.ownerId);
     h = mixHash(h, static_cast<int>(t.grade));
     h = mixHash(h, t.totalInvested);
@@ -155,9 +190,11 @@ std::string checkInvariants(const GameState& s) {
       if (o.isBankrupt) return "expelled player owns tile " + std::to_string(t.id);
       if (std::count(o.ownedTileIds.begin(), o.ownedTileIds.end(), t.id) != 1)
         return "owner list mismatch for tile " + std::to_string(t.id);
-      if (t.grade == Grade::None || t.totalInvested <= 0)
+      if ((t.type != TileType::Auction && t.grade == Grade::None) || t.totalInvested <= 0)
         return "owned tile " + std::to_string(t.id) + " has no grade/investment";
     }
+    if (t.type == TileType::Auction && (t.grade != Grade::None || t.upgradeCost != 0 || t.basePrice < s.config.auctionStartPrice))
+      return "auction tile " + std::to_string(t.id) + " has invalid grade/price";
   }
   for (const Player& p : s.players) {
     if (p.cash < 0) return p.name + " has negative cash";
@@ -182,6 +219,8 @@ std::string checkInvariants(const GameState& s) {
 
 struct Stats {
   int games = 0;
+  int completedGames = 0;
+  long long invariantChecks = 0;
   int illegalActions = 0;
   int invariantFailures = 0;
   int hitActionCap = 0;
@@ -215,6 +254,7 @@ struct Stats {
 bool isListedLegal(const LegalActions& legal, const Action& a) {
   for (const Action& l : legal.actions) {
     if (l.type != a.type || l.playerId != a.playerId) continue;
+    if (a.targetGrade != Grade::None && a.targetGrade != l.targetGrade) continue;
     switch (a.type) {
       case ActionType::AttemptSteal:
         if (a.amount >= legal.minBribe && a.amount <= legal.maxBribe) return true;
@@ -260,6 +300,7 @@ void injectGarbage(GameState& state, std::mt19937& rng, Stats& st, bool checkEve
   g.playerId = static_cast<int>(rng() % 7) - 1;               // -1 .. 5
   g.amount = static_cast<long long>(rng() % 3000000) - 1000000;  // negative .. huge
   g.tileId = static_cast<int>(rng() % 48) - 4;                // -4 .. 43
+  g.targetGrade = static_cast<Grade>(static_cast<int>(rng() % 8) - 1);  // includes invalid grades
   const unsigned long long before = stateDigest(state);
   const bool listed = isListedLegal(getLegalActions(state), g);
   const bool ok = applyAction(state, g, rng);
@@ -284,65 +325,123 @@ int main(int argc, char** argv) {
   int games = 1000;
   unsigned seed = 12345;
   bool verbose = false;
-  long long salaryOverride = -1;  // -1 = keep the default from GameConfig
-  long long cashOverride = -1;
+  GameConfig config;
+  BotConfig bot;
   int rentMultiplier = 1;
   bool cardsEnabled = true;     // --nocards turns the card tiles into no-ops
   bool fuzz = false;
   bool flatRent = false;        // rent factors 1,2,3,4,5
   double examBonusScale = 1.0;  // 0 disables Exam Season bonuses
-  int maxTempoOverride = -1;    // --maxtempo N: shorter or longer game
-  int rentPercent = 100;        // --rentpct P: rent factors x P/100 (100 = current preset)
-  for (int i = 1; i < argc; ++i) {
-    const std::string arg = argv[i];
-    if (arg == "--games" && i + 1 < argc) games = std::atoi(argv[++i]);
-    else if (arg == "--seed" && i + 1 < argc) seed = static_cast<unsigned>(std::atoi(argv[++i]));
-    else if (arg == "--verbose") verbose = true;
-    else if (arg == "--salary" && i + 1 < argc) salaryOverride = std::atoll(argv[++i]);
-    else if (arg == "--cash" && i + 1 < argc) cashOverride = std::atoll(argv[++i]);
-    else if (arg == "--rentx" && i + 1 < argc) rentMultiplier = std::atoi(argv[++i]);
-    else if (arg == "--flatrent") flatRent = true;
-    else if (arg == "--nocards") cardsEnabled = false;
-    else if (arg == "--fuzz") fuzz = true;
-    else if (arg == "--exambonus" && i + 1 < argc) examBonusScale = std::atof(argv[++i]);
-    else if (arg == "--maxtempo" && i + 1 < argc) maxTempoOverride = std::atoi(argv[++i]);
-    else if (arg == "--rentpct" && i + 1 < argc) rentPercent = std::atoi(argv[++i]);
-    else if (arg == "--stealprob" && i + 1 < argc) g_stealChance = std::atof(argv[++i]);
+  try {
+    for (int i = 1; i < argc; ++i) {
+      const std::string arg = argv[i];
+      const auto integer = [&](long long lo, long long hi) {
+        if (++i >= argc) throw std::runtime_error("missing value for " + arg);
+        char* end = nullptr;
+        errno = 0;
+        const long long v = std::strtoll(argv[i], &end, 10);
+        if (errno || end == argv[i] || *end || v < lo || v > hi)
+          throw std::runtime_error("invalid integer for " + arg);
+        return v;
+      };
+      const auto number = [&](double lo, double hi) {
+        if (++i >= argc) throw std::runtime_error("missing value for " + arg);
+        char* end = nullptr;
+        errno = 0;
+        const double v = std::strtod(argv[i], &end);
+        if (errno || end == argv[i] || *end || !std::isfinite(v) || v < lo || v > hi)
+          throw std::runtime_error("invalid number for " + arg);
+        return v;
+      };
+      if (arg == "--games") games = static_cast<int>(integer(1, 1000000));
+      else if (arg == "--seed") seed = static_cast<unsigned>(integer(0, 4294967295LL));
+      else if (arg == "--verbose") verbose = true;
+      else if (arg == "--salary") config.salary = integer(0, 1000000000);
+      else if (arg == "--cash") config.startCash = integer(0, 1000000000);
+      else if (arg == "--orderstep") config.startCashOrderStep = integer(0, 1000000000);
+      else if (arg == "--reserve") bot.reserve = integer(0, 1000000000);
+      else if (arg == "--upgrade-first") bot.upgradeFirst = true;
+      else if (arg == "--highest-grade") bot.highestGrade = true;
+      else if (arg == "--rentx") rentMultiplier = static_cast<int>(integer(0, 100));
+      else if (arg == "--flatrent") flatRent = true;
+      else if (arg == "--nocards") cardsEnabled = false;
+      else if (arg == "--fuzz") fuzz = true;
+      else if (arg == "--exambonus") examBonusScale = number(0, 1000);
+      else if (arg == "--maxtempo") config.maxTempo = static_cast<int>(integer(1, 10000));
+      else if (arg == "--rentpct") config.rentPercent = static_cast<int>(integer(0, 10000));
+      else if (arg == "--stealprob") g_stealChance = number(0, 1);
+      else if (arg == "--help") {
+        std::cout << "sim [--games N] [--seed N] [--cash VND] [--salary VND] [--orderstep VND]\n"
+                  << "    [--reserve VND] [--upgrade-first] [--highest-grade] [--rentpct P] [--rentx N]\n"
+                  << "    [--exambonus SCALE] [--stealprob 0..1] [--maxtempo N]\n"
+                  << "    [--flatrent] [--nocards] [--fuzz] [--verbose]\n"
+                  << "--cash is the mean starting cash; --orderstep 0 disables compensation.\n";
+        return 0;
+      } else throw std::runtime_error("unknown option: " + arg);
+    }
+    if (startingCashForTurnOrder(config, 0) < 0)
+      throw std::runtime_error("--cash is too small for --orderstep (first player would start negative)");
+  } catch (const std::exception& e) {
+    std::cerr << "Configuration error: " << e.what() << ". Use --help.\n";
+    return 2;
   }
   if (verbose) games = 1;
+  config.cardsEnabled = cardsEnabled;
+  if (flatRent)
+    for (int i = 0; i < 6; ++i) config.rentFactor[i] = i;
+  for (int& f : config.rentFactor) f *= rentMultiplier;
+  config.examBonusA = static_cast<long long>(config.examBonusA * examBonusScale);
+  config.examBonusAPlus = static_cast<long long>(config.examBonusAPlus * examBonusScale);
+
+  std::cout << "Build: " << __DATE__ << " " << __TIME__ << " | rules v" << kRulesVersion << "\n"
+            << "Run: games=" << games << ", seed=" << seed << ", fuzz=" << fuzz << "\n"
+            << "Config: mean_cash=" << config.startCash << ", order_step=" << config.startCashOrderStep
+            << ", salary=" << config.salary << ", admin_fee=" << config.adminFee
+            << ", retake_fee=" << config.retakeFee << ", jail_turns=" << config.jailTurns
+            << ", max_doubles=" << config.maxDoublesInRow << ", max_tempo=" << config.maxTempo
+            << ", semester=" << config.tempoPerSemester << ", exam_start=" << config.examSeasonStart
+            << ", exam_A=" << config.examBonusA << ", exam_Aplus=" << config.examBonusAPlus
+            << ", steal_bonus_tempos=" << config.stealBonusTempos << ", cards=" << config.cardsEnabled << "\n"
+            << "Initial cash by order: ";
+  for (int i = 0; i < 4; ++i) std::cout << (i ? "/" : "") << startingCashForTurnOrder(config, i);
+  std::cout << "\nRent factors D/C/B/A/A+: ";
+  for (int i = 1; i < 6; ++i) std::cout << (i > 1 ? "/" : "") << config.rentFactor[i];
+  std::cout << "; rent_percent=" << config.rentPercent << "; rent at base_rent=10000: ";
+  for (int i = 1; i < 6; ++i)
+    std::cout << (i > 1 ? "/" : "") << 10000LL * config.rentFactor[i] * config.rentPercent / 100;
+  std::cout << "\nBot: reserve=" << bot.reserve << ", upgrade_first=" << bot.upgradeFirst
+            << ", highest_grade=" << bot.highestGrade
+            << ", steal_probability=" << g_stealChance << "\n"
+            << "Invariant checks: every action, including large runs\n";
+  if (fuzz) std::cout << "Fuzz run: balance statistics are diagnostic; use a non-fuzz run for comparisons.\n";
 
   const int kPlayers = 4;
   const long long kActionCap = 200000;  // safety net against infinite loops
   Stats st;
+  BalanceMetrics metrics(makeBoard(), config.maxTempo);
 
   for (int g = 0; g < games; ++g) {
     std::mt19937 rng(seed + static_cast<unsigned>(g));
-    GameState state = makeNewGame(kPlayers, makeBoard(), seed + static_cast<unsigned>(g));
+    GameState state = makeNewGame(kPlayers, makeBoard(), seed + static_cast<unsigned>(g), config);
     state.logEnabled = verbose;
-    state.config.cardsEnabled = cardsEnabled;
-    if (salaryOverride >= 0) state.config.salary = salaryOverride;
-    if (cashOverride >= 0)
-      for (Player& p : state.players) p.cash = cashOverride;
-    if (flatRent) {
-      const int flat[6] = {0, 1, 2, 3, 4, 5};
-      for (int i = 0; i < 6; ++i) state.config.rentFactor[i] = flat[i];
-    }
-    for (int& f : state.config.rentFactor) f = f * rentMultiplier * rentPercent / 100;
-    if (maxTempoOverride > 0) state.config.maxTempo = maxTempoOverride;
-    state.config.examBonusA = static_cast<long long>(state.config.examBonusA * examBonusScale);
-    state.config.examBonusAPlus = static_cast<long long>(state.config.examBonusAPlus * examBonusScale);
+    GameTelemetry telemetry;
 
     long long actions = 0;
     int midLeader = -1;  // net-worth leader at the halfway tempo
     long long rolls = 0, decisions = 0;
-    for (const Player& p : state.players) st.startWorthSum += static_cast<double>(calculateNetWorth(state, p));
+    double initialWorth = 0;
+    for (const Player& p : state.players) initialWorth += static_cast<double>(calculateNetWorth(state, p));
     while (state.phase != Phase::GameOver && actions < kActionCap) {
+      const int actionTempo = state.currentTempo;
       if (fuzz) {
-        injectGarbage(state, rng, st, games <= 2000);
+        injectGarbage(state, rng, st, true);
+        ++st.invariantChecks;
+        metrics.observe(state, actionTempo, telemetry);
         if (state.phase == Phase::GameOver) break;
         checkListedActionsAreAccepted(state, rng, st);
       }
-      const Action a = botChoose(state, rng);
+      const int botActionTempo = state.currentTempo;
+      const Action a = botChoose(state, rng, bot);
       if (a.type == ActionType::RollDice) ++rolls;
       else if (getLegalActions(state).actions.size() > 1) ++decisions;
       if (!applyAction(state, a, rng)) {
@@ -351,6 +450,7 @@ int main(int argc, char** argv) {
         break;
       }
       ++actions;
+      metrics.observe(state, botActionTempo, telemetry);
       if (midLeader < 0 && state.currentTempo >= state.config.maxTempo / 2 + 1 && state.phase != Phase::GameOver) {
         long long best = -1;
         for (const Player& p : state.players) {
@@ -363,7 +463,8 @@ int main(int argc, char** argv) {
         for (const std::string& line : state.eventLog) std::cout << line << "\n";
         state.eventLog.clear();
       }
-      if (games <= 2000) {
+      {
+        ++st.invariantChecks;
         const std::string problem = checkInvariants(state);
         if (!problem.empty()) {
           ++st.invariantFailures;
@@ -376,9 +477,12 @@ int main(int argc, char** argv) {
     ++st.games;
     st.totalActions += actions;
     if (state.phase != Phase::GameOver) {
-      ++st.hitActionCap;
+      if (actions >= kActionCap) ++st.hitActionCap;
       continue;
     }
+    ++st.completedGames;
+    st.startWorthSum += initialWorth;
+    metrics.finish(state, telemetry);
     st.totalTempos += state.currentTempo;
     st.totalExpelled += kPlayers - countAlivePlayers(state);
     if (countAlivePlayers(state) < kPlayers) ++st.gamesWithExpulsion;
@@ -407,21 +511,29 @@ int main(int argc, char** argv) {
     }
   }
 
-  if (verbose) return 0;
-
-  const double n = st.games;
-  const int maxTempoShown = (maxTempoOverride > 0) ? maxTempoOverride : GameConfig().maxTempo;
-  std::cout << std::fixed << std::setprecision(1);
+  if (verbose) return (st.illegalActions || st.invariantFailures || st.hitActionCap || st.fuzzMutations || st.legalMismatches) ? 1 : 0;
+  if (!st.completedGames) {
+    std::cerr << "No games completed; balance statistics are unavailable.\n";
+    return 1;
+  }
+  const double n = st.completedGames;
+  const int maxTempoShown = config.maxTempo;
+  std::cout << std::fixed << std::setprecision(2);
   std::cout << "Games simulated:        " << st.games << "\n";
+  std::cout << "Games completed:        " << st.completedGames << "\n";
+  std::cout << "Incomplete games:       " << st.games - st.completedGames << "\n";
   std::cout << "Illegal bot actions:    " << st.illegalActions << "\n";
   std::cout << "Invariant failures:     " << st.invariantFailures << "\n";
+  std::cout << "Invariant checks run:   " << st.invariantChecks << "\n";
   std::cout << "Games hitting the cap:  " << st.hitActionCap << "\n";
-  std::cout << "Avg actions per game:   " << st.totalActions / n << "\n";
+  std::cout << "Avg actions per attempt:" << " " << double(st.totalActions) / st.games << "\n";
   std::cout << "Avg final tempo:        " << st.totalTempos / n << "\n";
   std::cout << "Avg players expelled:   " << st.totalExpelled / n << " / " << kPlayers << "\n";
   std::cout << "Games with an expulsion:" << " " << 100.0 * st.gamesWithExpulsion / n << "%\n";
-  std::cout << "Money supply growth:    x" << st.endWorthSum / st.startWorthSum
-            << "  (total net worth at the end / at the start)\n";
+  std::cout << "Net worth growth:       ";
+  if (st.startWorthSum > 0) std::cout << "x" << st.endWorthSum / st.startWorthSum;
+  else std::cout << "n/a (zero starting worth)";
+  std::cout << " (cash + invested asset value; not cash supply)\n";
   std::cout << "Owned tiles at the end: D " << st.endTiles[1] / n << ", C " << st.endTiles[2] / n
             << ", B " << st.endTiles[3] / n << ", A " << st.endTiles[4] / n
             << ", A+ " << st.endTiles[5] / n << "  (average per game; "
@@ -441,6 +553,14 @@ int main(int argc, char** argv) {
     std::cout << (i + 1) << (i == 0 ? "st " : i == 1 ? "nd " : i == 2 ? "rd " : "th ")
               << 100.0 * st.winsByTurnOrder[i] / n << "%  ";
   std::cout << "\n";
+  const auto extremes = std::minmax_element(st.winsByTurnOrder.begin(), st.winsByTurnOrder.end());
+  const double orderGap = 100.0 * (*extremes.second - *extremes.first) / n;
+  std::cout << "Turn-order gap:         " << orderGap << " percentage points ("
+            << (orderGap <= 3 ? "within provisional target" : orderGap <= 6 ? "review" : "large advantage") << ")\n";
+  std::cout << "Win-rate uncertainty:   approx +/- " << 100 * 1.96 * std::sqrt(0.25 * 0.75 / n)
+            << " percentage points per order near 25% (95%, not a simultaneous interval)\n";
+  if (st.completedGames < 10000) std::cout << "Sample note: screening only; confirm fairness with >=10000 games and independent seeds.\n";
+  metrics.print(std::cout, st.completedGames, st.startWorthSum);
   if (fuzz) {
     std::cout << "Fuzz: garbage actions rejected " << st.fuzzRejected << ", accepted by chance "
               << st.fuzzAccepted << ", rejected-but-changed-state " << st.fuzzMutations << "\n";

@@ -36,13 +36,6 @@ json ask(Engine& engine, const json& request) {
   return json::parse(handleRequest(engine, request.dump()));
 }
 
-std::string nextGrade(const std::string& g) {
-  if (g == "D") return "C";
-  if (g == "C") return "B";
-  if (g == "B") return "A";
-  return "A+";
-}
-
 std::string playerName(const json& snap, int id) {
   return id >= 0 ? snap["players"][static_cast<size_t>(id)]["name"].get<std::string>() : "the bank";
 }
@@ -54,7 +47,7 @@ void printBoard(const json& snap) {
   std::cout << "\n--- Board ---\n";
   for (const json& t : snap["tiles"]) {
     std::cout << " #" << t["id"].get<int>() << "\t" << t["name"].get<std::string>();
-    if (t["type"] == "institute") {
+    if (t["type"] == "institute" || t["type"] == "auction") {
       std::cout << "  [price " << money(t["base_price"]) << "]";
       if (t["owner_id"].get<int>() >= 0)
         std::cout << "  owner " << playerName(snap, t["owner_id"]) << ", grade "
@@ -110,12 +103,15 @@ std::string describe(const json& act, const json& snap, const json& rules) {
   if (type == "roll_dice") return "Roll the dice";
   if (type == "pay_retake_fee")
     return "Pay " + money(rules["retake_fee"]) + " to leave the Retake Exam room, then roll";
+  if (type == "buy" && pt && (*pt)["type"] == "auction")
+    return "Buy/take over [AUCTION] " + (*pt)["name"].get<std::string>() + " for " + money(act["cost"]);
   if (type == "buy" && pt)
-    return "Buy " + (*pt)["name"].get<std::string>() + " for " + money((*pt)["base_price"]);
+    return "Buy " + (*pt)["name"].get<std::string>() + " at grade " + act.value("target_grade", "D") +
+           " for " + money(act["cost"]);
   if (type == "upgrade" && pt)
     return "Upgrade " + (*pt)["name"].get<std::string>() + " (" +
-           (*pt)["grade"].get<std::string>() + " -> " + nextGrade((*pt)["grade"]) + ") for " +
-           money((*pt)["upgrade_cost"]);
+           (*pt)["grade"].get<std::string>() + " -> " + act.value("target_grade", "") + ") for " +
+           money(act["cost"]);
   if (type == "decline") return "Do nothing";
   if (type == "pay_rent" && pt) {
     if (snap["rent_free_turns_left"].get<int>() > 0) return "Pay no rent (rent holiday)";
@@ -123,17 +119,18 @@ std::string describe(const json& act, const json& snap, const json& rules) {
   }
   if (type == "attempt_steal" && pt)
     return "Try to steal it with a bribe (" + money(snap["legal"]["min_bribe"]) + " to " +
-           money(snap["legal"]["max_bribe"]) + "); chance = bribe / " +
-           money((*pt)["total_invested"]) + ", paid to owner if you fail";
+           money(snap["legal"]["max_bribe"]) + "); paid to owner if you fail, then optional upgrade if successful";
   if (type == "teleport_unowned")
-    return "Teleport to " + tileOf(act)["name"].get<std::string>() + " and buy it for " +
-           money(tileOf(act)["base_price"]) + " (+" + money(rules["admin_fee"]) + " fee)";
+    return "Teleport to " + tileOf(act)["name"].get<std::string>() + " and buy grade " +
+           act.value("target_grade", "D") + " for " + money(act["cost"]) + " total (fee included)";
   if (type == "teleport_owned") {
+    if (tileOf(act)["type"] == "auction")
+      return "Teleport to your [AUCTION] " + tileOf(act)["name"].get<std::string>() + " for " + money(act["cost"]);
     if (tileOf(act)["grade"] == "A+")
       return "Teleport to " + tileOf(act)["name"].get<std::string>() + " (already A+, " +
              money(rules["admin_fee"]) + " fee)";
-    return "Teleport to " + tileOf(act)["name"].get<std::string>() + " and upgrade it for " +
-           money(tileOf(act)["upgrade_cost"]) + " (+" + money(rules["admin_fee"]) + " fee)";
+    return "Teleport to " + tileOf(act)["name"].get<std::string>() + " and upgrade to " +
+           act.value("target_grade", "") + " for " + money(act["cost"]) + " total (fee included)";
   }
   if (type == "sell_tile")
     return "Sell " + tileOf(act)["name"].get<std::string>() + " to the bank for " +
@@ -253,6 +250,7 @@ int main(int argc, char** argv) {
 
     json request = {{"cmd", "action"}, {"type", chosen["type"]}, {"player_id", chosen["player_id"]},
                     {"tile_id", chosen["tile_id"]}, {"amount", chosen["amount"]}};
+    if (chosen.contains("target_grade")) request["target_grade"] = chosen["target_grade"];
     resp = ask(engine, request);
     if (!resp["ok"].get<bool>()) {  // cannot happen with legal actions; kept for safety
       std::cerr << "engine refused: " << resp["message"].get<std::string>() << "\n";

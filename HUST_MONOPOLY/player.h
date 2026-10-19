@@ -6,7 +6,7 @@
 struct Player {
   int id = 0;  // invariant: players[i].id == i
   std::string name;
-  long long cash = 0;  // makeNewGame() sets this from GameConfig::startCash
+  long long cash = 0;  // makeNewGame() applies mean startCash and turn-order compensation
   int position = 0;
   std::vector<int> ownedTileIds;
   int turnsInJail = 0;         // > 0 means currently in the Retake Exam room

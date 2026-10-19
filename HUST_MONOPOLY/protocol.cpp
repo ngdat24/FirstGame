@@ -33,6 +33,7 @@ const char* phaseName(Phase p) {
 const char* tileTypeName(TileType t) {
   switch (t) {
     case TileType::Institute: return "institute";
+    case TileType::Auction: return "auction";
     case TileType::Start: return "start";
     case TileType::SpecialCorner: return "special_corner";
     case TileType::RetakeExam: return "retake_exam";
@@ -149,10 +150,12 @@ bool readInt(const json& obj, const char* key, bool required, long long lo, long
 // Public snapshot (RULES.md section 11)
 // ---------------------------------------------------------------------------
 json actionJson(const Action& a) {
-  return json{{"type", actionName(a.type)},
+  json result{{"type", actionName(a.type)},
               {"player_id", a.playerId},
               {"tile_id", a.tileId},
               {"amount", a.amount}};
+  if (a.targetGrade != Grade::None) result["target_grade"] = gradeName(a.targetGrade);
+  return result;
 }
 
 json snapshotJson(const GameState& s) {
@@ -166,16 +169,22 @@ json snapshotJson(const GameState& s) {
   j["current_player_id"] = s.players.empty() ? -1 : s.players[s.currentPlayerIndex].id;
   j["first_player_id"] = s.firstPlayerIndex;
   j["pending_tile_id"] = s.pendingTileId;
-  j["debt"] = {{"amount", s.debt.amount}, {"creditor_id", s.debt.creditorId}};
+  j["debt"] = {{"amount", s.debt.amount}, {"creditor_id", s.debt.creditorId},
+               {"auction_tile_id", s.debt.auctionTileId}};
   j["rent_free_turns_left"] = s.rentFreeTurnsLeft;
   j["last_dice"] = {s.lastDice.first, s.lastDice.second};
 
   json players = json::array();
   for (const Player& p : s.players) {
+    int institutes = 0;
+    for (int tid : p.ownedTileIds)
+      if (s.tiles[tid].type == TileType::Institute) ++institutes;
     players.push_back({{"id", p.id},
                        {"name", p.name},
                        {"cash", p.cash},
                        {"net_worth", calculateNetWorth(s, p)},
+                       {"auction_count", countOwnedAuctions(s, p.id)},
+                       {"institute_count", institutes},
                        {"position", p.position},
                        {"jail_turns", p.turnsInJail},
                        {"consecutive_doubles", p.consecutiveDoubles},
@@ -212,7 +221,12 @@ json snapshotJson(const GameState& s) {
 
   const LegalActions legal = getLegalActions(s);
   json acts = json::array();
-  for (const Action& a : legal.actions) acts.push_back(actionJson(a));
+  for (const Action& a : legal.actions) {
+    json entry = actionJson(a);
+    const long long cost = investmentActionCost(s, a);
+    if (cost >= 0) entry["cost"] = cost;
+    acts.push_back(entry);
+  }
   j["legal"] = {{"actions", acts}, {"min_bribe", legal.minBribe}, {"max_bribe", legal.maxBribe}};
   return j;
 }
@@ -230,7 +244,19 @@ json rulesJson() {
   json r;
   r["ok"] = true;
   r["rules"] = {{"players", kSupportedPlayers},
+                {"rules_version", kRulesVersion},
+                {"auction_start_price", c.auctionStartPrice},
+                {"auction_escalation", c.auctionEscalation},
+                {"auction_rent", c.auctionRent},
+                {"purchase_grades", {"D", "C", "B"}},
+                {"upgrade_targets", {{"D", {"C", "B"}}, {"C", {"B"}},
+                                     {"B", {"A"}}, {"A", {"A+"}}, {"A+", json::array()}}},
                 {"start_cash", c.startCash},
+                {"start_cash_order_step", c.startCashOrderStep},
+                {"starting_cash_by_turn_order", {startingCashForTurnOrder(c, 0),
+                                                startingCashForTurnOrder(c, 1),
+                                                startingCashForTurnOrder(c, 2),
+                                                startingCashForTurnOrder(c, 3)}},
                 {"salary", c.salary},
                 {"retake_fee", c.retakeFee},
                 {"admin_fee", c.adminFee},
@@ -241,6 +267,8 @@ json rulesJson() {
                 {"exam_season_start", c.examSeasonStart},
                 {"exam_bonus_a", c.examBonusA},
                 {"exam_bonus_a_plus", c.examBonusAPlus},
+                {"steal_bonus_tempos", c.stealBonusTempos},
+                {"rent_percent", c.rentPercent},
                 {"rent_factor", {{"D", c.rentFactor[1]}, {"C", c.rentFactor[2]},
                                  {"B", c.rentFactor[3]}, {"A", c.rentFactor[4]},
                                  {"A+", c.rentFactor[5]}}}};
@@ -284,8 +312,18 @@ json cmdNewGame(Engine& e, const json& req) {
   e.state = makeNewGame(kSupportedPlayers, makeBoard(), deckSeed);
   e.state.logEnabled = true;
   e.hasGame = true;
-  return stateResponse(
-      e, {e.state.players[e.state.firstPlayerIndex].name + " đi đầu tiên."});
+  std::string opening = e.state.players[e.state.firstPlayerIndex].name + " đi đầu tiên. ";
+  if (e.state.config.startCashOrderStep == 0) {
+    opening += "Vốn đầu mỗi người: " + std::to_string(e.state.config.startCash) + " VND.";
+  } else {
+    opening += "Vốn đầu theo thứ tự lượt: ";
+    for (int order = 0; order < kSupportedPlayers; ++order) {
+      if (order) opening += " / ";
+      opening += std::to_string(e.state.players[(e.state.firstPlayerIndex + order) % kSupportedPlayers].cash);
+    }
+    opening += " VND (bù lợi thế lượt đi).";
+  }
+  return stateResponse(e, {opening});
 }
 
 json cmdAction(Engine& e, const json& req) {
@@ -308,6 +346,15 @@ json cmdAction(Engine& e, const json& req) {
   a.playerId = static_cast<int>(playerId);
   a.amount = amount;
   a.tileId = static_cast<int>(tileId);
+  const auto gradeIt = req.find("target_grade");
+  if (gradeIt != req.end()) {
+    if (!gradeIt->is_string()) return errorJson("bad_request", "target_grade must be a grade string");
+    bool found = false;
+    for (Grade g : {Grade::D, Grade::C, Grade::B, Grade::A, Grade::APlus}) {
+      if (gradeIt->get<std::string>() == gradeName(g)) { a.targetGrade = g; found = true; break; }
+    }
+    if (!found) return errorJson("bad_request", "target_grade must be D, C, B, A or A+");
+  }
 
   e.state.eventLog.clear();
   if (!applyAction(e.state, a, e.rng)) {

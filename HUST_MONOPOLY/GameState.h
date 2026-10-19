@@ -11,20 +11,27 @@
 
 // All tunable numbers live here so simulations can change them without
 // touching the rules code.
+inline constexpr const char* kRulesVersion = "1.6";
+
 struct GameConfig {
-  long long startCash = 700000;
+  long long startCash = 1000000;  // mean; actual starting cash also depends on turn order
+  long long startCashOrderStep = 0;  // equal cash by default; nonzero only for balance experiments
   long long salary = 200000;     // collected when passing/landing on Start
   long long retakeFee = 50000;   // Retake Exam escape fee (voluntary or forced)
-  long long adminFee = 50000;    // Special Corner teleport fee
+  long long adminFee = 20000;    // Special Corner teleport fee
   int jailTurns = 3;
   int maxDoublesInRow = 3;       // this many doubles in one turn -> jail
   int maxTempo = 48;             // game ends when this tempo concludes (8 semesters x 6 tempos)
   int tempoPerSemester = 6;      // 5 study tempos + 1 exam tempo per semester
   int examSeasonStart = 6;       // tempo 6 of each semester pays scholarships
-  int rentFactor[6] = {0, 3, 6, 9, 18, 40};  // x baseRent, indexed by Grade: None,D,C,B,A,APlus
-  long long examBonusA = 50000;
-  long long examBonusAPlus = 100000;
-  int stealBonusTempos = 3;      // the "Phao thi" bonus expires after this many tempos (the tempo it is drawn in counts as the first)
+  int rentFactor[6] = {0, 3, 6, 9, 15, 30};  // x baseRent, indexed by Grade: None,D,C,B,A,APlus
+  int rentPercent = 100;         // scale the final rent, not the integer grade factor
+  long long auctionStartPrice = 50000;
+  long long auctionEscalation = 20000;
+  long long auctionRent = 25000;
+  long long examBonusA = 150000;
+  long long examBonusAPlus = 400000;
+  int stealBonusTempos = 3;      // the "Phao thi" bonus expires after this many tempos
   bool cardsEnabled = true;      // false: the card tiles do nothing (for A/B simulations)
 };
 
@@ -41,6 +48,7 @@ struct PendingDebt {
   long long amount = 0;
   int creditorId = -1;  // -1 = bank
   int moveSteps = 0;    // >0: move this many steps once the debt is paid
+  int auctionTileId = -1;  // offer takeover after this visit fee is fully paid
 };
 
 struct GameState {

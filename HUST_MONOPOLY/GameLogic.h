@@ -26,12 +26,14 @@ struct Action {
   int playerId = -1;
   long long amount = 0;  // bribe for AttemptSteal
   int tileId = -1;       // target tile for teleport / sell
+  Grade targetGrade = Grade::None;  // buy/upgrade destination; None preserves the legacy default
 };
 
 // What the player to move may do right now: everything a UI needs to enable its buttons.
 // `actions` lists every discrete legal action (playerId is already filled in).
 // AttemptSteal is listed ONCE with amount = 0 as a placeholder: any bribe from
 // minBribe to maxBribe (inclusive) is legal. Other actions ignore `amount`.
+// Buy/Upgrade/Teleport list each affordable targetGrade as a separate choice.
 struct LegalActions {
   std::vector<Action> actions;
   long long minBribe = 0;
@@ -39,8 +41,13 @@ struct LegalActions {
 };
 
 // ---- Setup -----------------------------------------------------------------
-// `seed` only controls the card deck shuffle (dice use the rng you pass in).
-GameState makeNewGame(int numPlayers, const std::vector<Tile>& board, unsigned seed = 1);
+// `seed` controls the first seat and deck shuffle (dice use the rng you pass in).
+// Apply config before setup so cash experiments retain turn-order compensation.
+GameState makeNewGame(int numPlayers, const std::vector<Tile>& board, unsigned seed = 1,
+                      const GameConfig& config = GameConfig{});
+
+// turnOrder is zero-based relative to the first seat. Offsets sum to zero.
+long long startingCashForTurnOrder(const GameConfig& config, int turnOrder, int numPlayers = 4);
 
 // Pure query: lists the legal actions of the current player (empty when the game is over).
 // Guaranteed to agree with applyAction: every listed action is accepted, nothing else is.
@@ -66,8 +73,12 @@ std::pair<int, int> rollDice(std::mt19937& rng);
 void movePlayer(GameState& state, Player& player, int steps);
 void resolveLanding(GameState& state, Player& player, Tile& tile);
 
-bool buyTile(GameState& state, Player& player, Tile& tile);
-bool upgradeTile(GameState& state, Player& player, Tile& tile);
+// Prices include all grade steps; -1 denotes an invalid destination.
+long long purchasePrice(const Tile& tile, Grade target = Grade::None);
+long long upgradePrice(const Tile& tile, Grade target = Grade::None);
+long long investmentActionCost(const GameState& state, const Action& action);
+bool buyTile(GameState& state, Player& player, Tile& tile, Grade target = Grade::None);
+bool upgradeTile(GameState& state, Player& player, Tile& tile, Grade target = Grade::None);
 long long rentFor(const GameState& state, const Tile& tile);
 // Assumes the bribe was validated (0 < bribe <= cash). Returns true on success.
 bool attemptSteal(GameState& state, Player& player, Tile& tile,
@@ -77,3 +88,4 @@ bool cornerHasOptions(const GameState& state, const Player& player);
 void examSeasonPayout(GameState& state);
 long long calculateNetWorth(const GameState& state, const Player& player);
 int countAlivePlayers(const GameState& state);
+int countOwnedAuctions(const GameState& state, int playerId);

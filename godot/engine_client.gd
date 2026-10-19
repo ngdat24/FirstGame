@@ -73,13 +73,16 @@ func get_state() -> Dictionary:
 ## bribe first). Godot's JSON parser turns every number into a float, and the server refuses
 ## floats such as 3.0, so the fields are converted back to integers here.
 func send_action(action: Dictionary) -> Dictionary:
-	return await call_engine({
+	var request: Dictionary = {
 		"cmd": "action",
 		"type": str(action.get("type", "")),
 		"player_id": int(action.get("player_id", 0)),
 		"tile_id": int(action.get("tile_id", -1)),
 		"amount": int(action.get("amount", 0)),
-	})
+	}
+	if action.has("target_grade"):
+		request["target_grade"] = str(action["target_grade"])
+	return await call_engine(request)
 
 
 func _error(code: String, message: String) -> Dictionary:

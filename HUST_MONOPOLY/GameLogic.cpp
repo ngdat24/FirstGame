@@ -57,8 +57,14 @@ void finishLanding(GameState& s);
 void moveAndResolve(GameState& s, Player& p, int steps);
 void settleDebt(GameState& s);
 void expel(GameState& s, Player& p);
-void chargeOrLiquidate(GameState& s, long long amount, int creditorId, int moveSteps);
+void chargeOrLiquidate(GameState& s, long long amount, int creditorId, int moveSteps, int auctionTileId = -1);
 void sendToRetakeExam(GameState& s, Player& p);
+void offerAuctionPurchase(GameState& s, Player& p, Tile& t) {
+  if (!p.isBankrupt && t.ownerId != p.id && p.cash >= t.basePrice) {
+    s.phase = Phase::AwaitLandingChoice;
+    s.pendingTileId = t.id;
+  } else finishLanding(s);
+}
 
 // ---------------------------------------------------------------------------
 // Các lượt chơi
@@ -143,6 +149,7 @@ void nextTurn(GameState& s) {
 
 // Called when the player has finished resolving everything about a roll.
 void finishLanding(GameState& s) {
+  if (s.phase == Phase::GameOver) return;  // preserve the four-Auction instant win
   s.pendingTileId = -1;
   s.debt = PendingDebt{};
   Player& p = currentPlayer(s);
@@ -179,10 +186,13 @@ void settleDebt(GameState& s) {
   const long long amount = s.debt.amount;
   const int creditor = s.debt.creditorId;
   const int steps = s.debt.moveSteps;
+  const int auctionTile = s.debt.auctionTileId;
   p.cash -= amount;
   if (creditor >= 0) s.players[creditor].cash += amount;
   s.debt = PendingDebt{};
-  if (steps > 0)
+  if (auctionTile >= 0)
+    offerAuctionPurchase(s, p, s.tiles[auctionTile]);
+  else if (steps > 0)
     moveAndResolve(s, p, steps);
   else
     finishLanding(s);
@@ -203,9 +213,9 @@ void expel(GameState& s, Player& p) {
 
 // A forced payment. Pays at once if affordable; otherwise the player must
 // sell Institutes (Phase::AwaitLiquidation), or is expelled if nothing is left.
-void chargeOrLiquidate(GameState& s, long long amount, int creditorId, int moveSteps) {
+void chargeOrLiquidate(GameState& s, long long amount, int creditorId, int moveSteps, int auctionTileId) {
   Player& p = currentPlayer(s);
-  s.debt = PendingDebt{amount, creditorId, moveSteps};
+  s.debt = PendingDebt{amount, creditorId, moveSteps, auctionTileId};
   if (p.cash >= amount) {
     settleDebt(s);
     return;
@@ -372,14 +382,21 @@ bool handleLandingChoice(GameState& s, Player& p, const Action& a, std::mt19937&
   const bool unowned = (t.ownerId == -1);
   const bool mine = (t.ownerId == p.id);
   const bool opponents = !unowned && !mine;
+  if (t.type == TileType::Auction) {
+    if (a.type == ActionType::Buy) {
+      if (mine || !buyTile(s, p, t, a.targetGrade)) return false;
+    } else if (a.type != ActionType::Decline) return false;
+    finishLanding(s);
+    return true;
+  }
 
   switch (a.type) {
     case ActionType::Buy:
-      if (!unowned || !buyTile(s, p, t)) return false;
+      if (!unowned || !buyTile(s, p, t, a.targetGrade)) return false;
       finishLanding(s);
       return true;
     case ActionType::Upgrade:
-      if (!mine || !upgradeTile(s, p, t)) return false;
+      if (!mine || !upgradeTile(s, p, t, a.targetGrade)) return false;
       finishLanding(s);
       return true;
     case ActionType::Decline:
@@ -401,8 +418,10 @@ bool handleLandingChoice(GameState& s, Player& p, const Action& a, std::mt19937&
       const long long fullB = (3LL * t.totalInvested + 1) / 2;
       const long long maxB = std::min(p.cash, fullB);
       if (minB >= fullB || a.amount < minB || a.amount > maxB) return false;
-      attemptSteal(s, p, t, a.amount, rng);
-      finishLanding(s);
+      if (attemptSteal(s, p, t, a.amount, rng) && t.grade != Grade::A)
+        resolveLanding(s, p, t);  // new owner may upgrade once, using cash left after the bribe
+      else
+        finishLanding(s);
       return true;
     }
     default:
@@ -420,32 +439,42 @@ bool handleCornerChoice(GameState& s, Player& p, const Action& a) {
       if (a.tileId < 0 || a.tileId >= static_cast<int>(s.tiles.size())) return false;
       Tile& t = s.tiles[a.tileId];
       if (t.type != TileType::Institute || t.ownerId != -1) return false;
-      if (p.cash < fee + t.basePrice) return false;
+      const long long price = purchasePrice(t, a.targetGrade);
+      if (price < 0 || p.cash < fee + price) return false;
       p.cash -= fee;
       p.position = t.id;  // teleporting does NOT pass Start: no salary
       logEvent(s, p.name + " muốn học ở " + t.name + ".");
-      buyTile(s, p, t);
+      buyTile(s, p, t, a.targetGrade);
       finishLanding(s);
       return true;
     }
     case ActionType::TeleportOwned: {
       if (a.tileId < 0 || a.tileId >= static_cast<int>(s.tiles.size())) return false;
       Tile& t = s.tiles[a.tileId];
-      if (t.type != TileType::Institute || t.ownerId != p.id) return false;
+      if (t.ownerId != p.id) return false;
+      if (t.type == TileType::Auction) {
+        if (a.targetGrade != Grade::None || p.cash < fee) return false;
+        p.cash -= fee;
+        p.position = t.id;
+        finishLanding(s);
+        return true;
+      }
+      if (t.type != TileType::Institute) return false;
       if (t.grade == Grade::None) return false;
       if (t.grade == Grade::APlus) {
-        if (p.cash < fee) return false;
+        if (a.targetGrade != Grade::None || p.cash < fee) return false;
         p.cash -= fee;
         p.position = t.id;
         logEvent(s, p.name + " muốn đi tới " + t.name + ".");
         finishLanding(s);
         return true;
       }
-      if (p.cash < fee + t.upgradeCost) return false;
+      const long long price = upgradePrice(t, a.targetGrade);
+      if (price < 0 || p.cash < fee + price) return false;
       p.cash -= fee;
       p.position = t.id;
       logEvent(s, p.name + " muốn học ở " + t.name + ".");
-      upgradeTile(s, p, t);
+      upgradeTile(s, p, t, a.targetGrade);
       finishLanding(s);
       return true;
     }
@@ -459,7 +488,7 @@ bool handleLiquidation(GameState& s, Player& p, const Action& a) {
   if (a.type != ActionType::SellTile) return false;
   if (a.tileId < 0 || a.tileId >= static_cast<int>(s.tiles.size())) return false;
   Tile& t = s.tiles[a.tileId];
-  if (t.type != TileType::Institute || t.ownerId != p.id) return false;
+  if ((t.type != TileType::Institute && t.type != TileType::Auction) || t.ownerId != p.id) return false;
 
   const long long proceeds = t.totalInvested / 2;  // 50% of total invested value
   logEvent(s, p.name + " phải bỏ học " + t.name + " và bán học phần để trả " +
@@ -479,21 +508,39 @@ bool handleLiquidation(GameState& s, Player& p, const Action& a) {
 // ===========================================================================
 // Public API
 // ===========================================================================
-GameState makeNewGame(int numPlayers, const std::vector<Tile>& board, unsigned seed) {
+long long startingCashForTurnOrder(const GameConfig& config, int turnOrder, int numPlayers) {
+  return config.startCash + (2LL * turnOrder - (numPlayers - 1)) * config.startCashOrderStep / 2;
+}
+
+GameState makeNewGame(int numPlayers, const std::vector<Tile>& board, unsigned seed,
+                      const GameConfig& config) {
   GameState s;
+  s.config = config;
   s.tiles = board;
+  for (Tile& t : s.tiles) {
+    if (t.type != TileType::Auction) continue;
+    t.basePrice = config.auctionStartPrice;
+    t.baseRent = config.auctionRent;
+    t.upgradeCost = 0;
+    t.grade = Grade::None;
+    t.ownerId = -1;
+    t.totalInvested = 0;
+  }
   s.deck = makeCardDeck();
   s.deckRng.seed(seed);
   for (int i = 0; i < numPlayers; ++i) {
     Player p;
     p.id = i;
     p.name = "Thằng " + std::to_string(i + 1);
-    p.cash = s.config.startCash;
     s.players.push_back(p);
   }
   if (numPlayers > 0)  // random first player (same seed -> same game)
     s.firstPlayerIndex = s.currentPlayerIndex =
         static_cast<int>(s.deckRng() % static_cast<unsigned>(numPlayers));
+  for (Player& p : s.players) {
+    const int order = (p.id - s.firstPlayerIndex + numPlayers) % numPlayers;
+    p.cash = startingCashForTurnOrder(s.config, order, numPlayers);
+  }
   return s;
 }
 
@@ -536,35 +583,91 @@ void movePlayer(GameState& s, Player& p, int steps) {
 }
 
 long long rentFor(const GameState& s, const Tile& t) {
+  if (t.type == TileType::Auction) return s.config.auctionRent * s.config.rentPercent / 100;
   return static_cast<long long>(t.baseRent) *
-         s.config.rentFactor[static_cast<int>(t.grade)];
+         s.config.rentFactor[static_cast<int>(t.grade)] * s.config.rentPercent / 100;
 }
 
-bool buyTile(GameState& s, Player& p, Tile& t) {
+long long purchasePrice(const Tile& t, Grade target) {
+  if (t.type == TileType::Auction) return target == Grade::None ? t.basePrice : -1;
+  if (target == Grade::None) target = Grade::D;
+  if (t.type != TileType::Institute || target < Grade::D || target > Grade::B) return -1;
+  return t.basePrice + static_cast<long long>(static_cast<int>(target) - static_cast<int>(Grade::D)) * t.upgradeCost;
+}
+
+long long upgradePrice(const Tile& t, Grade target) {
+  if (t.type != TileType::Institute || t.grade < Grade::D || t.grade >= Grade::APlus) return -1;
+  const Grade next = static_cast<Grade>(static_cast<int>(t.grade) + 1);
+  if (target == Grade::None) target = next;
+  if (target != next && !(t.grade == Grade::D && target == Grade::B)) return -1;
+  return static_cast<long long>(static_cast<int>(target) - static_cast<int>(t.grade)) * t.upgradeCost;
+}
+
+long long investmentActionCost(const GameState& s, const Action& a) {
+  const bool teleport = a.type == ActionType::TeleportUnowned || a.type == ActionType::TeleportOwned;
+  const int tid = teleport ? a.tileId : s.pendingTileId;
+  if (tid < 0 || tid >= static_cast<int>(s.tiles.size())) return -1;
+  const Tile& t = s.tiles[tid];
+  long long price = -1;
+  if (a.type == ActionType::Buy || a.type == ActionType::TeleportUnowned)
+    price = purchasePrice(t, a.targetGrade);
+  else if (a.type == ActionType::Upgrade || a.type == ActionType::TeleportOwned) {
+    if (a.type == ActionType::TeleportOwned && (t.grade == Grade::APlus || t.type == TileType::Auction) && a.targetGrade == Grade::None)
+      price = 0;
+    else price = upgradePrice(t, a.targetGrade);
+  }
+  return price < 0 ? -1 : price + (teleport ? s.config.adminFee : 0);
+}
+
+bool buyTile(GameState& s, Player& p, Tile& t, Grade target) {
+  if (t.type == TileType::Auction) {
+    if (target != Grade::None || t.ownerId == p.id || p.cash < t.basePrice) return false;
+    const long long price = t.basePrice;
+    if (t.ownerId >= 0) removeOwned(s.players[t.ownerId], t.id);
+    p.cash -= price;
+    t.ownerId = p.id;
+    t.grade = Grade::None;
+    t.totalInvested = price;
+    t.basePrice += s.config.auctionEscalation;
+    p.ownedTileIds.push_back(t.id);
+    logEvent(s, p.name + " mua ô Đấu Giá " + t.name + " với giá " + std::to_string(price) + ".");
+    if (countOwnedAuctions(s, p.id) >= 4) {
+      s.phase = Phase::GameOver;
+      s.winnerId = p.id;
+      s.pendingTileId = -1;
+      s.debt = PendingDebt{};
+      logEvent(s, p.name + " thắng ngay nhờ sở hữu đủ 4 ô Đấu Giá.");
+    }
+    return true;
+  }
   if (t.type != TileType::Institute || t.ownerId != -1) return false;
-  if (p.cash < t.basePrice) return false;
-  p.cash -= t.basePrice;
+  const long long price = purchasePrice(t, target);
+  if (price < 0 || p.cash < price) return false;
+  if (target == Grade::None) target = Grade::D;
+  p.cash -= price;
   t.ownerId = p.id;
-  t.grade = Grade::D;
-  t.totalInvested = t.basePrice;
+  t.grade = target;
+  t.totalInvested = price;
   p.ownedTileIds.push_back(t.id);
   logEvent(s, p.name + " đăng kí học phần " + t.name + " với mức giá " +
-                  std::to_string(t.basePrice) + ".");
+                  std::to_string(price) + " (điểm " + gradeName(target) + ").");
   return true;
 }
 
-bool upgradeTile(GameState& s, Player& p, Tile& t) {
+bool upgradeTile(GameState& s, Player& p, Tile& t, Grade target) {
   if (t.type != TileType::Institute || t.ownerId != p.id) return false;
-  if (t.grade == Grade::None || t.grade == Grade::APlus) return false;
-  if (p.cash < t.upgradeCost) return false;
-  p.cash -= t.upgradeCost;
-  t.totalInvested += t.upgradeCost;
-  t.grade = static_cast<Grade>(static_cast<int>(t.grade) + 1);
+  const long long price = upgradePrice(t, target);
+  if (price < 0 || p.cash < price) return false;
+  if (target == Grade::None) target = static_cast<Grade>(static_cast<int>(t.grade) + 1);
+  p.cash -= price;
+  t.totalInvested += price;
+  t.grade = target;
   logEvent(s, p.name + " nâng trình " + t.name + " lên điểm " + gradeName(t.grade) + ".");
   return true;
 }
 
 bool attemptSteal(GameState& s, Player& p, Tile& t, long long bribe, std::mt19937& rng) {
+  if (t.type != TileType::Institute || t.grade == Grade::APlus || t.ownerId < 0 || t.ownerId == p.id) return false;
   const long long minB = (3LL * rentFor(s, t) + 1) / 2;
   const long long fullB = (3LL * t.totalInvested + 1) / 2;
   double rate = 0.0;
@@ -604,6 +707,7 @@ bool cornerHasOptions(const GameState& s, const Player& p) {
   const long long avail = p.cash - s.config.adminFee;
   if (avail < 0) return false;
   for (const Tile& t : s.tiles) {
+    if (t.type == TileType::Auction && t.ownerId == p.id) return true;
     if (t.type != TileType::Institute) continue;
     if (t.ownerId == -1 && t.basePrice <= avail) return true;
     if (t.ownerId == p.id && t.grade != Grade::None) {
@@ -616,6 +720,12 @@ bool cornerHasOptions(const GameState& s, const Player& p) {
 
 void resolveLanding(GameState& s, Player& p, Tile& t) {
   switch (t.type) {
+    case TileType::Auction:
+      if (t.ownerId >= 0 && t.ownerId != p.id && s.rentFreeTurnsLeft <= 0)
+        chargeOrLiquidate(s, rentFor(s, t), t.ownerId, 0, t.id);
+      else
+        offerAuctionPurchase(s, p, t);
+      return;
     case TileType::AcademicWarning:
       logEvent(s, p.name + " bị áp giải đi thí nghiệm VLDC II.");
       sendToRetakeExam(s, p);
@@ -703,6 +813,13 @@ int countAlivePlayers(const GameState& s) {
   return n;
 }
 
+int countOwnedAuctions(const GameState& s, int playerId) {
+  int count = 0;
+  for (const Tile& t : s.tiles)
+    if (t.type == TileType::Auction && t.ownerId == playerId) ++count;
+  return count;
+}
+
 bool applyRoll(GameState& s, int d1, int d2) {
   if (s.phase != Phase::AwaitRoll || s.players.empty()) return false;
   if (d1 < 1 || d1 > 6 || d2 < 1 || d2 > 6) return false;
@@ -753,11 +870,12 @@ LegalActions getLegalActions(const GameState& s) {
   LegalActions out;
   if (s.phase == Phase::GameOver || s.players.empty()) return out;
   const Player& p = s.players[s.currentPlayerIndex];
-  auto add = [&](ActionType type, int tileId = -1) {
+  auto add = [&](ActionType type, int tileId = -1, Grade target = Grade::None) {
     Action a;
     a.type = type;
     a.playerId = p.id;
     a.tileId = tileId;
+    a.targetGrade = target;
     out.actions.push_back(a);
   };
 
@@ -770,12 +888,22 @@ LegalActions getLegalActions(const GameState& s) {
     case Phase::AwaitLandingChoice: {
       if (s.pendingTileId < 0) break;
       const Tile& t = s.tiles[s.pendingTileId];
+      if (t.type == TileType::Auction) {
+        if (t.ownerId != p.id && p.cash >= t.basePrice) add(ActionType::Buy);
+        add(ActionType::Decline);
+        break;
+      }
       if (t.ownerId == -1) {
-        if (t.type == TileType::Institute && p.cash >= t.basePrice) add(ActionType::Buy);
+        for (Grade target : {Grade::D, Grade::C, Grade::B}) {
+          const long long price = purchasePrice(t, target);
+          if (price >= 0 && p.cash >= price) add(ActionType::Buy, -1, target);
+        }
         add(ActionType::Decline);
       } else if (t.ownerId == p.id) {
-        if (t.grade != Grade::None && t.grade != Grade::APlus && p.cash >= t.upgradeCost)
-          add(ActionType::Upgrade);
+        for (Grade target : {Grade::C, Grade::B, Grade::A, Grade::APlus}) {
+          const long long price = upgradePrice(t, target);
+          if (price >= 0 && p.cash >= price) add(ActionType::Upgrade, -1, target);
+        }
         add(ActionType::Decline);
       } else {  // somebody else's tile: pay rent or try to steal (unless locked at A+)
         add(ActionType::PayRent);
@@ -794,14 +922,24 @@ LegalActions getLegalActions(const GameState& s) {
       add(ActionType::Decline);
       const long long fee = s.config.adminFee;
       for (const Tile& t : s.tiles) {
+        if (t.type == TileType::Auction && t.ownerId == p.id && p.cash >= fee)
+          add(ActionType::TeleportOwned, t.id);
         if (t.type != TileType::Institute) continue;
-        if (t.ownerId == -1 && p.cash >= fee + t.basePrice)
-          add(ActionType::TeleportUnowned, t.id);
+        if (t.ownerId == -1) {
+          for (Grade target : {Grade::D, Grade::C, Grade::B}) {
+            const long long price = purchasePrice(t, target);
+            if (price >= 0 && p.cash >= fee + price) add(ActionType::TeleportUnowned, t.id, target);
+          }
+        }
         else if (t.ownerId == p.id && t.grade != Grade::None) {
           if (t.grade == Grade::APlus && p.cash >= fee)
             add(ActionType::TeleportOwned, t.id);
-          else if (t.grade != Grade::APlus && p.cash >= fee + t.upgradeCost)
-            add(ActionType::TeleportOwned, t.id);
+          else if (t.grade != Grade::APlus) {
+            for (Grade target : {Grade::C, Grade::B, Grade::A, Grade::APlus}) {
+              const long long price = upgradePrice(t, target);
+              if (price >= 0 && p.cash >= fee + price) add(ActionType::TeleportOwned, t.id, target);
+            }
+          }
         }
       }
       break;
@@ -821,6 +959,8 @@ bool applyAction(GameState& s, const Action& a, std::mt19937& rng) {
   if (s.phase == Phase::GameOver || s.players.empty()) return false;
   Player& p = currentPlayer(s);
   if (a.playerId != p.id) return false;
+  if (a.targetGrade != Grade::None && a.type != ActionType::Buy && a.type != ActionType::Upgrade &&
+      a.type != ActionType::TeleportUnowned && a.type != ActionType::TeleportOwned) return false;
 
   switch (s.phase) {
     case Phase::AwaitRoll:          return handleRollPhase(s, p, a, rng);
