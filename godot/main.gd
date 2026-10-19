@@ -134,6 +134,8 @@ class IsoBoardCanvas extends Control:
 			h = 26.0
 		elif t_type == "card":
 			h = 12.0
+		elif t_type == "auction":
+			h = 25.0
 		else:
 			match grade:
 				"D": h = 18.0
@@ -159,7 +161,9 @@ class IsoBoardCanvas extends Control:
 		var right_wall := PackedVector2Array([top_b, top_r, r0, b0])
 
 		var top_col := Color(0.93, 0.94, 0.96)
-		if owner_id >= 0 and owner_id < 4:
+		if t_type == "auction":
+			top_col = Color(1.0, 0.77, 0.16)
+		elif owner_id >= 0 and owner_id < 4:
 			top_col = PLAYER_COLORS[owner_id].lightened(0.32)
 		elif is_corner:
 			top_col = Color(0.98, 0.90, 0.68)
@@ -171,6 +175,9 @@ class IsoBoardCanvas extends Control:
 
 		var left_col: Color = top_col.darkened(0.22)
 		var right_col: Color = top_col.darkened(0.38)
+		if t_type == "auction" and owner_id >= 0 and owner_id < 4:
+			left_col = PLAYER_COLORS[owner_id].lightened(0.15)
+			right_col = PLAYER_COLORS[owner_id].darkened(0.15)
 		var edge_col := Color(0.12, 0.14, 0.18)
 		var edge_w: float = 1.5
 		if tid == selected_tid:
@@ -190,7 +197,9 @@ class IsoBoardCanvas extends Control:
 
 		var center: Vector2 = (top_t + top_b) * 0.5
 		var label_txt: String = "#%d" % tid
-		if grade != "none" and grade != "":
+		if t_type == "auction":
+			label_txt = "#%d [ĐG]" % tid
+		elif grade != "none" and grade != "":
 			label_txt += "[%s]" % grade
 		elif is_corner:
 			match tid:
@@ -202,6 +211,9 @@ class IsoBoardCanvas extends Control:
 			label_txt = "#%d THẺ" % tid
 
 		draw_string(font, center + Vector2(-18.0, 4.0), label_txt, HORIZONTAL_ALIGNMENT_CENTER, 40.0, 10, Color(0.08, 0.10, 0.12))
+		if t_type == "auction":
+			var auction_price: int = int(t.get("base_price", 50000))
+			draw_string(font, center + Vector2(-24.0, 14.0), "%dk" % int(auction_price / 1000), HORIZONTAL_ALIGNMENT_CENTER, 48.0, 9, Color(0.15, 0.10, 0.0))
 
 		var here_pids: Array[int] = []
 		for p in players:
@@ -515,7 +527,7 @@ func _render_snapshot(snap: Dictionary) -> void:
 		player_cards[i].text = (
 			"[color=#%s][b]%s[/b][/color]%s\n" % [p_color, str(p.get("name", "P")), turn_tag] +
 			"Tiền: [b]%s[/b] | Tài sản: %s\n" % [_fmt(int(p.get("cash", 0))), _fmt(int(p.get("net_worth", 0)))] +
-			"Ô: #%d | Số viện: %d%s" % [int(p.get("position", 0)), (p.get("owned_tile_ids", []) as Array).size(), extra]
+			"Ô: #%d | Viện: %d | ĐG: %d/4%s" % [int(p.get("position", 0)), int(p.get("institute_count", 0)), int(p.get("auction_count", 0)), extra]
 		)
 
 	var tiles: Array = snap.get("tiles", [])
@@ -535,7 +547,14 @@ func _update_tile_inspector() -> void:
 	var owner_id: int = int(t.get("owner_id", -1))
 	var owner_text: String = ("Player %d" % (owner_id + 1)) if owner_id >= 0 else "Chưa ai sở hữu"
 
-	if t_type == "institute":
+	if t_type == "auction":
+		tile_inspector_label.text = (
+			"[b][color=#ffd54f][ĐG] Ô #%d: %s[/color][/b]\n" % [tid, t_name] +
+			"• Chủ: %s | Giá mua/mua đè: [b]%s VND[/b]\n" % [owner_text, _fmt(int(t.get("base_price", 0)))] +
+			"• Phí ghé: %s | Vốn lần mua trước: %s | Thanh lý: %s\n" % [_fmt(int(t.get("rent", 0))), _fmt(int(t.get("total_invested", 0))), _fmt(int(t.get("sell_value", 0)))] +
+			"• Sở hữu đủ 4 ô Đấu Giá để thắng ngay."
+		)
+	elif t_type == "institute":
 		tile_inspector_label.text = (
 			"[b][color=#9fc5e8]🔍 Ô #%d: %s[/color][/b] [i](Click khối 3D bất kỳ để soi)[/i]\n" % [tid, t_name] +
 			"• Chủ: [b]%s[/b] | Cấp điểm: [b]%s[/b] | Vốn tích lũy: [b]%s[/b]\n" % [
@@ -574,7 +593,9 @@ func _render_legal_actions(snap: Dictionary, tiles: Array, players: Array, cur_p
 		else:
 			var btn := Button.new()
 			btn.custom_minimum_size = Vector2(0, 38)
-			btn.text = _format_action_button(a_type, tid, tiles, pending_tid)
+			btn.text = _format_action_button(a_type, tid, tiles, pending_tid, act)
+			if tid >= 0 and tid < tiles.size():
+				btn.tooltip_text = str(tiles[tid].get("name", ""))
 			btn.pressed.connect(func() -> void:
 				_send_player_action(act)
 			)
@@ -686,28 +707,35 @@ func _build_steal_controls(act: Dictionary, min_bribe: int, max_bribe: int, tile
 	vbox.add_child(steal_btn)
 
 
-func _format_action_button(a_type: String, tid: int, tiles: Array, pending_tid: int) -> String:
+func _format_action_button(a_type: String, tid: int, tiles: Array, pending_tid: int, action: Dictionary = {}) -> String:
 	var t_name: String = ("#%d %s" % [tid, str(tiles[tid].get("name", ""))]) if (tid >= 0 and tid < tiles.size()) else ""
 	var p_tile: Dictionary = tiles[pending_tid] if (pending_tid >= 0 and pending_tid < tiles.size()) else {}
+	var target: String = str(action.get("target_grade", ""))
+	var cost: int = int(action.get("cost", 0))
 	match a_type:
 		"roll_dice":
 			return "🎲 Đổ Xúc Xắc"
 		"pay_retake_fee":
 			return "💸 Nộp 50,000 VND Phí Thi Lại (Ra phòng thi lại)"
 		"buy":
-			return "🏛️ Mua Viện Này (%s VND)" % _fmt(int(p_tile.get("base_price", 0)))
+			if str(p_tile.get("type", "")) == "auction":
+				var verb: String = "Mua đè" if int(p_tile.get("owner_id", -1)) >= 0 else "Mua"
+				return "🔨 %s ô [ĐG] (%s VND)" % [verb, _fmt(cost)]
+			return "🏛️ Mua Viện — Điểm %s (%s VND)" % [target, _fmt(cost)]
 		"upgrade":
-			return "📈 Nâng Điểm Viện (%s VND)" % _fmt(int(p_tile.get("upgrade_cost", 0)))
+			return "📈 Nâng %s → %s (%s VND)" % [str(p_tile.get("grade", "")), target, _fmt(cost)]
 		"decline":
 			return "⏭️ Bỏ Qua (Kết thúc lựa chọn)"
 		"pay_rent":
 			return "💰 Nộp Học Liệu (%s VND)" % _fmt(int(p_tile.get("rent", 0)))
 		"teleport_unowned":
-			var bp: int = int(tiles[tid].get("base_price", 0)) if (tid >= 0 and tid < tiles.size()) else 0
-			return "🚀 Dịch chuyển + Mua %s (Phí 20k + %s)" % [t_name, _fmt(bp)]
+			return "🚀 Ô #%d: Mua điểm %s — Tổng %s VND" % [tid, target, _fmt(cost)]
 		"teleport_owned":
-			var uc: int = int(tiles[tid].get("upgrade_cost", 0)) if (tid >= 0 and tid < tiles.size()) else 0
-			return "🏠 Dịch chuyển + Nâng cấp %s (Phí 20k + %s)" % [t_name, _fmt(uc)]
+			if tid >= 0 and tid < tiles.size() and str(tiles[tid].get("type", "")) == "auction":
+				return "🏠 Ô #%d: Tới ô [ĐG] của mình — %s VND" % [tid, _fmt(cost)]
+			if target.is_empty():
+				return "🏠 Ô #%d: Trú tại viện A+ — %s VND" % [tid, _fmt(cost)]
+			return "🏠 Ô #%d: Nâng lên %s — Tổng %s VND" % [tid, target, _fmt(cost)]
 		"sell_tile":
 			var sell_val: int = int(tiles[tid].get("sell_value", 0)) if (tid >= 0 and tid < tiles.size()) else 0
 			return "🔨 Thanh lý %s (Thu về +%s VND)" % [t_name, _fmt(sell_val)]

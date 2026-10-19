@@ -19,18 +19,22 @@ static int g_failed = 0;
     }                                                                    \
   } while (0)
 
-static Action act(ActionType type, int playerId, long long amount = 0, int tileId = -1) {
+static Action act(ActionType type, int playerId, long long amount = 0, int tileId = -1,
+                  Grade target = Grade::None) {
   Action a;
   a.type = type;
   a.playerId = playerId;
   a.amount = amount;
   a.tileId = tileId;
+  a.targetGrade = target;
   return a;
 }
 
 // makeNewGame() starts at a random seat; tests want player 0 first so scenarios are fixed.
 static GameState fresh() {
-  GameState s = makeNewGame(4, makeBoard());
+  GameConfig config;
+  config.startCashOrderStep = 0;  // scripted scenarios use equal cash and force seat 0
+  GameState s = makeNewGame(4, makeBoard(), 1, config);
   s.firstPlayerIndex = s.currentPlayerIndex = 0;
   return s;
 }
@@ -78,6 +82,7 @@ static void testNonDoubleResetsStreakAndBuy() {
   CHECK(s.players[0].consecutiveDoubles == 1);
   CHECK(applyRoll(s, 1, 2));  // non-double: streak resets, moves to tile 5 (Other)
   CHECK(s.players[0].consecutiveDoubles == 0);
+  CHECK(applyAction(s, act(ActionType::Decline, 0), rng));
   CHECK(s.currentPlayerIndex == 1);
 
   GameState b = fresh();
@@ -303,7 +308,7 @@ static void testExamSeason() {
   GameState s = fresh();
   giveTile(s, 2, 0, Grade::APlus, 350000);
   giveTile(s, 3, 0, Grade::A, 300000);
-  giveTile(s, 4, 0, Grade::B, 200000);  // B, C and D earn nothing
+  giveTile(s, 6, 0, Grade::B, 200000);  // B, C and D earn nothing
   const long long base = s.players[0].cash;
   const long long bonus = s.config.examBonusA + s.config.examBonusAPlus;
 
@@ -393,9 +398,9 @@ static void stackCustom(GameState& s, CardEffectType type, long long value) {
   stackDeck(s, static_cast<int>(s.deck.cards.size()) - 1);
 }
 
-// Current player rolls onto tile 5 (an "Other" tile) from Start.
+// Current player rolls onto card tile 15.
 static void landOnCardTile(GameState& s) {
-  s.players[s.currentPlayerIndex].position = 0;
+  s.players[s.currentPlayerIndex].position = 10;
   CHECK(applyRoll(s, 2, 3));
 }
 
@@ -495,7 +500,9 @@ static void testSubsidyTieIsRandom() {
   // Everyone starts with the same net worth, so all four are tied as "poorest".
   int received[4] = {0, 0, 0, 0};
   for (unsigned seed = 1; seed <= 200; ++seed) {
-    GameState s = makeNewGame(4, makeBoard(), seed);
+    GameConfig config;
+    config.startCashOrderStep = 0;
+    GameState s = makeNewGame(4, makeBoard(), seed, config);
     s.firstPlayerIndex = s.currentPlayerIndex = 0;
     stackDeck(s, findCard(s, CardEffectType::PovertySubsidy));
     landOnCardTile(s);
@@ -554,7 +561,7 @@ static void testCardSkipTurn() {
   // Drawing it on a doubles roll also cancels the bonus roll.
   GameState d = fresh();
   stackDeck(d, findCard(d, CardEffectType::SkipTurn));
-  d.players[0].position = 1;
+  d.players[0].position = 11;
   CHECK(applyRoll(d, 2, 2));  // doubles: 1 + 4 = tile 5, a card tile
   CHECK(d.players[0].skipTurns == 1);
   CHECK(d.players[0].consecutiveDoubles == 0);
@@ -697,6 +704,46 @@ static void testCardsSwitchAndRegularTiles() {
   CHECK(s.players[0].cash == s.config.startCash);
 }
 
+static void testStartingCashAndRentScaling() {
+  const long long expected[] = {1000000, 1000000, 1000000, 1000000};
+  for (unsigned seed = 1; seed <= 40; ++seed) {
+    GameState s = makeNewGame(4, makeBoard(), seed);
+    long long total = 0;
+    for (int order = 0; order < 4; ++order) {
+      const Player& p = s.players[(s.firstPlayerIndex + order) % 4];
+      CHECK(p.cash == expected[order]);
+      total += p.cash;
+    }
+    CHECK(total == 4 * s.config.startCash);
+  }
+  GameConfig custom;
+  custom.startCash = 1200000;
+  custom.startCashOrderStep = 20000;
+  GameState s = makeNewGame(4, makeBoard(), 7, custom);
+  CHECK(s.players[s.firstPlayerIndex].cash == 1170000);
+  CHECK(s.players[(s.firstPlayerIndex + 3) % 4].cash == 1230000);
+  custom.startCashOrderStep = 0;
+  for (const Player& p : makeNewGame(4, makeBoard(), 7, custom).players)
+    CHECK(p.cash == 1200000);
+
+  s = fresh();
+  giveTile(s, 1, 1, Grade::D, 100000);
+  s.config.rentPercent = 80;
+  CHECK(rentFor(s, s.tiles[1]) == 24000);  // factor stays 3, not truncated to 2
+  CHECK(s.config.rentFactor[1] == 3);
+  s.players[0].position = 38;
+  CHECK(applyRoll(s, 1, 2));  // lands on tile 1 owned by player 1
+  CHECK(getLegalActions(s).minBribe == 36000);
+  std::mt19937 rng(1);
+  const long long ownerCash = s.players[1].cash;
+  CHECK(applyAction(s, act(ActionType::PayRent, 0), rng));
+  CHECK(s.players[1].cash == ownerCash + 24000);
+  s.config.rentPercent = 33;
+  CHECK(rentFor(s, s.tiles[1]) == 9900);
+  s.config.rentPercent = 0;
+  CHECK(rentFor(s, s.tiles[1]) == 0);
+}
+
 static void testRandomFirstPlayer() {
   int seen[4] = {0, 0, 0, 0};
   for (unsigned seed = 1; seed <= 200; ++seed) {
@@ -785,13 +832,13 @@ static void testLegalActions() {
   GameState a = fresh();
   CHECK(applyRoll(a, 1, 2));
   l = getLegalActions(a);
-  CHECK(l.actions.size() == 2 && hasAction(l, ActionType::Buy) && hasAction(l, ActionType::Decline));
+  CHECK(l.actions.size() == 4 && hasAction(l, ActionType::Buy) && hasAction(l, ActionType::Decline));
   CHECK(allListedAccepted(a));
   GameState b = fresh();
   giveTile(b, 3, 0, Grade::D, b.tiles[3].basePrice);
   CHECK(applyRoll(b, 1, 2));
   l = getLegalActions(b);
-  CHECK(l.actions.size() == 2 && hasAction(l, ActionType::Upgrade) && hasAction(l, ActionType::Decline));
+  CHECK(l.actions.size() == 3 && hasAction(l, ActionType::Upgrade) && hasAction(l, ActionType::Decline));
   CHECK(allListedAccepted(b));
 
   // Opponent's tile: pay or steal (no decline); bribes limited by cash.
@@ -820,7 +867,7 @@ static void testLegalActions() {
   CHECK(hasAction(l, ActionType::Decline));
   CHECK(hasAction(l, ActionType::TeleportOwned, 7));
   CHECK(!hasAction(l, ActionType::TeleportUnowned, 7));  // already mine
-  CHECK(countAction(l, ActionType::TeleportUnowned) == 31);
+  CHECK(countAction(l, ActionType::TeleportUnowned) == 87);
   CHECK(allListedAccepted(d));
   d.players[0].cash = d.config.adminFee + 105000;  // can only afford a 100k tile
   l = getLegalActions(d);
@@ -833,7 +880,7 @@ static void testLegalActions() {
   std::mt19937 rng(1);
   giveTile(e, 2, 0, Grade::A, 300000);
   giveTile(e, 3, 1, Grade::B, 200000);
-  giveTile(e, 4, 1, Grade::D, 130000);
+  giveTile(e, 6, 1, Grade::D, 130000);
   e.players[1].cash = 1000;
   e.currentPlayerIndex = 1;
   CHECK(applyRoll(e, 1, 1));
@@ -841,7 +888,7 @@ static void testLegalActions() {
   CHECK(e.phase == Phase::AwaitLiquidation);
   l = getLegalActions(e);
   CHECK(l.actions.size() == 2);
-  CHECK(hasAction(l, ActionType::SellTile, 3) && hasAction(l, ActionType::SellTile, 4));
+  CHECK(hasAction(l, ActionType::SellTile, 3) && hasAction(l, ActionType::SellTile, 6));
   CHECK(l.actions[0].playerId == 1);
   CHECK(allListedAccepted(e));
 
@@ -851,7 +898,259 @@ static void testLegalActions() {
   CHECK(getLegalActions(g).actions.empty());
 }
 
+static bool offersGrade(const GameState& s, ActionType type, Grade target, int tid = -1) {
+  for (const Action& a : getLegalActions(s).actions)
+    if (a.type == type && a.targetGrade == target && a.tileId == tid) return true;
+  return false;
+}
+
+static void testGradeChoicePurchasesAndUpgradePaths() {
+  std::mt19937 rng(17);
+  for (Grade target : {Grade::D, Grade::C, Grade::B}) {
+    GameState s = fresh();
+    CHECK(applyRoll(s, 1, 2));  // unowned tile 3; no doubles
+    CHECK(offersGrade(s, ActionType::Buy, target));
+    const long long expected = s.tiles[3].basePrice +
+        (static_cast<int>(target) - static_cast<int>(Grade::D)) * s.tiles[3].upgradeCost;
+    CHECK(applyAction(s, act(ActionType::Buy, 0, 0, -1, target), rng));
+    CHECK(s.tiles[3].grade == target && s.tiles[3].ownerId == 0);
+    CHECK(s.tiles[3].totalInvested == expected);
+    CHECK(s.players[0].cash == 1000000 - expected);
+    CHECK(calculateNetWorth(s, s.players[0]) == 1000000);
+    CHECK(!applyAction(s, act(ActionType::Upgrade, 0, 0, -1, Grade::A), rng));
+  }
+  for (Grade from : {Grade::D, Grade::C, Grade::B, Grade::A, Grade::APlus}) {
+    for (Grade to : {Grade::D, Grade::C, Grade::B, Grade::A, Grade::APlus}) {
+      GameState s = fresh();
+      const int invested = s.tiles[3].basePrice + (static_cast<int>(from) - 1) * s.tiles[3].upgradeCost;
+      giveTile(s, 3, 0, from, invested);
+      CHECK(applyRoll(s, 1, 2));
+      const bool allowed = (from == Grade::D && (to == Grade::C || to == Grade::B)) ||
+          (from == Grade::C && to == Grade::B) || (from == Grade::B && to == Grade::A) ||
+          (from == Grade::A && to == Grade::APlus);
+      CHECK(offersGrade(s, ActionType::Upgrade, to) == allowed);
+      const auto beforeRng = rng;
+      CHECK(applyAction(s, act(ActionType::Upgrade, 0, 0, -1, to), rng) == allowed);
+      const long long cost = allowed ? (static_cast<int>(to) - static_cast<int>(from)) * s.tiles[3].upgradeCost : 0;
+      CHECK(s.players[0].cash == 1000000 - cost);
+      CHECK(s.tiles[3].totalInvested == invested + cost);
+      CHECK(s.tiles[3].grade == (allowed ? to : from));
+      CHECK(rng == beforeRng);  // investments and rejections never consume RNG
+    }
+  }
+  GameState poor = fresh();
+  CHECK(applyRoll(poor, 1, 2));
+  poor.players[0].cash = purchasePrice(poor.tiles[3], Grade::C) - 1;
+  CHECK(offersGrade(poor, ActionType::Buy, Grade::D));
+  CHECK(!offersGrade(poor, ActionType::Buy, Grade::C));
+  CHECK(!offersGrade(poor, ActionType::Buy, Grade::B));
+  const long long beforeCash = poor.players[0].cash;
+  for (Grade bad : {Grade::C, Grade::B, Grade::A, Grade::APlus, static_cast<Grade>(-1), static_cast<Grade>(6)}) {
+    CHECK(!applyAction(poor, act(ActionType::Buy, 0, 0, -1, bad), rng));
+    CHECK(poor.players[0].cash == beforeCash && poor.tiles[3].ownerId == -1);
+    CHECK(poor.phase == Phase::AwaitLandingChoice);
+  }
+  GameState dbl = fresh();
+  CHECK(applyRoll(dbl, 1, 1));
+  CHECK(applyAction(dbl, act(ActionType::Buy, 0, 0, -1, Grade::B), rng));
+  CHECK(dbl.phase == Phase::AwaitRoll && dbl.currentPlayerIndex == 0);
+  CHECK(!applyAction(dbl, act(ActionType::Upgrade, 0, 0, -1, Grade::A), rng));
+  CHECK(dbl.tiles[2].grade == Grade::B);
+}
+
+static void testPostStealGradeChoices() {
+  std::mt19937 rng(19);
+  for (Grade from : {Grade::D, Grade::C, Grade::B, Grade::A}) {
+    for (bool upgrade : {false, true}) {
+      GameState s = fresh();
+      const int invested = s.tiles[2].basePrice + (static_cast<int>(from) - 1) * s.tiles[2].upgradeCost;
+      giveTile(s, 2, 1, from, invested);
+      CHECK(applyRoll(s, 1, 1));
+      CHECK(!offersGrade(s, ActionType::Upgrade, Grade::B));  // opponent: rent/steal only
+      CHECK(!applyAction(s, act(ActionType::Upgrade, 0, 0, -1, Grade::B), rng));
+      const long long bribe = (3LL * invested + 1) / 2;
+      CHECK(applyAction(s, act(ActionType::AttemptSteal, 0, bribe), rng));
+      CHECK(s.tiles[2].ownerId == 0 && s.tiles[2].grade == from);
+      CHECK(s.tiles[2].totalInvested == invested);
+      CHECK(s.players[0].cash == 1000000 - bribe && s.players[1].cash == 1000000);
+      CHECK(s.players[1].ownedTileIds.empty() && s.players[0].ownedTileIds.size() == 1);
+      if (from == Grade::A) {
+        CHECK(s.phase == Phase::AwaitRoll && s.currentPlayerIndex == 0 && s.pendingTileId == -1);
+        CHECK(!offersGrade(s, ActionType::Upgrade, Grade::APlus));
+        CHECK(!applyAction(s, act(ActionType::Upgrade, 0, 0, -1, Grade::APlus), rng));
+        continue;
+      }
+      CHECK(s.phase == Phase::AwaitLandingChoice && s.currentPlayerIndex == 0 && s.pendingTileId == 2);
+      const Grade to = from == Grade::D ? Grade::B : static_cast<Grade>(static_cast<int>(from) + 1);
+      CHECK(offersGrade(s, ActionType::Upgrade, to));
+      const long long cost = upgrade ? upgradePrice(s.tiles[2], to) : 0;
+      CHECK(applyAction(s, act(upgrade ? ActionType::Upgrade : ActionType::Decline, 0, 0, -1,
+                               upgrade ? to : Grade::None), rng));
+      CHECK(s.tiles[2].grade == (upgrade ? to : from));
+      CHECK(s.tiles[2].totalInvested == invested + cost);
+      CHECK(s.players[0].cash == 1000000 - bribe - cost);
+      CHECK(s.phase == Phase::AwaitRoll && s.currentPlayerIndex == 0);  // doubles resume after choice
+      CHECK(!applyAction(s, act(ActionType::Upgrade, 0, 0, -1, Grade::APlus), rng));
+    }
+  }
+  GameState noCash = fresh();
+  giveTile(noCash, 3, 1, Grade::D, noCash.tiles[3].basePrice);
+  CHECK(applyRoll(noCash, 1, 2));
+  const long long bribe = (3LL * noCash.tiles[3].totalInvested + 1) / 2;
+  noCash.players[0].cash = bribe;
+  CHECK(applyAction(noCash, act(ActionType::AttemptSteal, 0, bribe), rng));
+  CHECK(noCash.tiles[3].ownerId == 0 && noCash.tiles[3].grade == Grade::D);
+  CHECK(noCash.players[0].cash == 0 && noCash.currentPlayerIndex == 1);
+
+  GameState limited = fresh();
+  giveTile(limited, 3, 1, Grade::D, limited.tiles[3].basePrice);
+  CHECK(applyRoll(limited, 1, 2));
+  const long long limitedBribe = (3LL * limited.tiles[3].totalInvested + 1) / 2;
+  limited.players[0].cash = limitedBribe + 2 * limited.tiles[3].upgradeCost - 1;
+  CHECK(applyAction(limited, act(ActionType::AttemptSteal, 0, limitedBribe), rng));
+  CHECK(offersGrade(limited, ActionType::Upgrade, Grade::C));
+  CHECK(!offersGrade(limited, ActionType::Upgrade, Grade::B));
+  const long long remainder = limited.players[0].cash;
+  CHECK(!applyAction(limited, act(ActionType::Upgrade, 0, 0, -1, Grade::B), rng));
+  CHECK(limited.players[0].cash == remainder && limited.tiles[3].grade == Grade::D);
+  CHECK(applyAction(limited, act(ActionType::Upgrade, 0, 0, -1, Grade::C), rng));
+  CHECK(limited.tiles[3].grade == Grade::C);
+
+  GameState last = fresh();
+  giveTile(last, 3, 1, Grade::D, last.tiles[3].basePrice);
+  last.currentTempo = last.config.maxTempo;
+  last.currentPlayerIndex = 3;
+  CHECK(applyRoll(last, 1, 2));
+  CHECK(applyAction(last, act(ActionType::AttemptSteal, 3, (3LL * last.tiles[3].totalInvested + 1) / 2), rng));
+  CHECK(last.phase == Phase::AwaitLandingChoice);  // cannot finish the game before the earned choice
+  CHECK(applyAction(last, act(ActionType::Upgrade, 3, 0, -1, Grade::B), rng));
+  CHECK(last.phase == Phase::GameOver && last.tiles[3].grade == Grade::B);
+
+  GameState exam = fresh();
+  giveTile(exam, 3, 1, Grade::B, exam.tiles[3].basePrice + 2 * exam.tiles[3].upgradeCost);
+  exam.currentTempo = 5;
+  exam.currentPlayerIndex = 3;
+  CHECK(applyRoll(exam, 1, 2));
+  const long long examBribe = (3LL * exam.tiles[3].totalInvested + 1) / 2;
+  CHECK(applyAction(exam, act(ActionType::AttemptSteal, 3, examBribe), rng));
+  CHECK(exam.currentTempo == 5);  // finish the upgrade before entering Exam Season
+  CHECK(applyAction(exam, act(ActionType::Upgrade, 3, 0, -1, Grade::A), rng));
+  CHECK(exam.currentTempo == 6);
+  CHECK(exam.players[3].cash == 1000000 - examBribe - exam.tiles[3].upgradeCost + exam.config.examBonusA);
+}
+
+static void testCornerGradeChoices() {
+  std::mt19937 rng(23);
+  for (Grade target : {Grade::D, Grade::C, Grade::B}) {
+    GameState s = fresh();
+    s.players[0].position = 20;
+    resolveLanding(s, s.players[0], s.tiles[20]);
+    CHECK(offersGrade(s, ActionType::TeleportUnowned, target, 3));
+    const long long cost = s.config.adminFee + purchasePrice(s.tiles[3], target);
+    CHECK(applyAction(s, act(ActionType::TeleportUnowned, 0, 0, 3, target), rng));
+    CHECK(s.players[0].cash == 1000000 - cost && s.players[0].position == 3);
+    CHECK(s.tiles[3].grade == target && s.tiles[3].totalInvested == cost - s.config.adminFee);
+  }
+  for (Grade from : {Grade::D, Grade::C, Grade::B, Grade::A}) {
+    GameState s = fresh();
+    const int invested = s.tiles[3].basePrice + (static_cast<int>(from) - 1) * s.tiles[3].upgradeCost;
+    giveTile(s, 3, 0, from, invested);
+    s.players[0].position = 20;
+    resolveLanding(s, s.players[0], s.tiles[20]);
+    const Grade target = from == Grade::D ? Grade::B : static_cast<Grade>(static_cast<int>(from) + 1);
+    const long long cost = s.config.adminFee + upgradePrice(s.tiles[3], target);
+    const long long before = s.players[0].cash;
+    CHECK(!applyAction(s, act(ActionType::TeleportOwned, 0, 0, 3, from), rng));
+    CHECK(s.players[0].cash == before && s.players[0].position == 20);
+    CHECK(applyAction(s, act(ActionType::TeleportOwned, 0, 0, 3, target), rng));
+    CHECK(s.tiles[3].grade == target && s.players[0].cash == before - cost);
+    CHECK(s.tiles[3].totalInvested == invested + cost - s.config.adminFee);
+  }
+}
+
+
+static void giveAuction(GameState& s, int tid, int owner, long long paid = 50000) {
+  Tile& t = s.tiles[tid];
+  t.ownerId = owner; t.grade = Grade::None; t.totalInvested = paid;
+  t.basePrice = paid + s.config.auctionEscalation;
+  s.players[owner].ownedTileIds.push_back(tid);
+}
+static void testAuctions() {
+  std::mt19937 rng(31);
+  GameState s = fresh();
+  int auctions = 0, cards = 0, institutes = 0;
+  for (const auto& t : s.tiles) {
+    auctions += t.type == TileType::Auction;
+    cards += t.type == TileType::Other;
+    institutes += t.type == TileType::Institute;
+  }
+  CHECK(auctions == 4 && cards == 2 && institutes == 30);
+  CHECK(s.tiles[5].basePrice == 120000 && s.tiles[5].upgradeCost == 60000 && s.tiles[5].baseRent == 12000);
+  s.players[0].position = 4;
+  resolveLanding(s, s.players[0], s.tiles[4]);
+  CHECK(getLegalActions(s).actions.size() == 2);
+  CHECK(!applyAction(s, act(ActionType::Buy, 0, 0, -1, Grade::D), rng));
+  CHECK(applyAction(s, act(ActionType::Buy, 0), rng));
+  CHECK(s.players[0].cash == 950000 && s.tiles[4].basePrice == 70000 && s.tiles[4].totalInvested == 50000);
+  s.currentPlayerIndex = 1; s.phase = Phase::AwaitRoll; s.players[1].position = 4;
+  resolveLanding(s, s.players[1], s.tiles[4]);
+  CHECK(s.players[1].cash == 975000 && s.players[0].cash == 975000);
+  CHECK(!hasAction(getLegalActions(s), ActionType::AttemptSteal));
+  CHECK(applyAction(s, act(ActionType::Buy, 1), rng));
+  CHECK(s.players[1].cash == 905000 && s.players[0].cash == 975000);
+  CHECK(s.tiles[4].ownerId == 1 && s.tiles[4].basePrice == 90000 && s.tiles[4].totalInvested == 70000);
+  CHECK(s.players[0].ownedTileIds.empty());
+
+  GameState debt = fresh();
+  giveAuction(debt, 4, 1);
+  giveTile(debt, 2, 0, Grade::B, 200000);
+  debt.players[0].cash = 0; debt.players[0].position = 4;
+  resolveLanding(debt, debt.players[0], debt.tiles[4]);
+  CHECK(debt.phase == Phase::AwaitLiquidation && debt.debt.auctionTileId == 4);
+  CHECK(applyAction(debt, act(ActionType::SellTile, 0, 0, 2), rng));
+  CHECK(debt.phase == Phase::AwaitLandingChoice && debt.players[0].cash == 75000);
+  CHECK(debt.players[1].cash == 1025000);
+  CHECK(applyAction(debt, act(ActionType::Buy, 0), rng));
+  CHECK(debt.players[0].cash == 5000 && debt.tiles[4].basePrice == 90000);
+
+  GameState sold = fresh();
+  giveAuction(sold, 4, 0);
+  giveAuction(sold, 13, 1);
+  sold.players[0].cash = 0; sold.players[0].position = 13;
+  resolveLanding(sold, sold.players[0], sold.tiles[13]);
+  CHECK(applyAction(sold, act(ActionType::SellTile, 0, 0, 4), rng));
+  CHECK(sold.tiles[4].ownerId == -1 && sold.tiles[4].totalInvested == 0 && sold.tiles[4].basePrice == 70000);
+  CHECK(sold.players[0].cash == 0 && sold.phase != Phase::AwaitLiquidation);
+
+  GameState holiday = fresh(); giveAuction(holiday, 4, 1);
+  holiday.rentFreeTurnsLeft = 1; holiday.players[0].position = 4;
+  resolveLanding(holiday, holiday.players[0], holiday.tiles[4]);
+  CHECK(holiday.players[0].cash == 1000000 && holiday.phase == Phase::AwaitLandingChoice);
+  GameState corner = fresh(); giveAuction(corner, 4, 0); giveAuction(corner, 13, 1);
+  corner.players[0].position = 20; resolveLanding(corner, corner.players[0], corner.tiles[20]);
+  CHECK(hasAction(getLegalActions(corner), ActionType::TeleportOwned, 4));
+  CHECK(!hasAction(getLegalActions(corner), ActionType::TeleportUnowned, 25));
+  CHECK(!hasAction(getLegalActions(corner), ActionType::TeleportOwned, 13));
+  CHECK(applyAction(corner, act(ActionType::TeleportOwned, 0, 0, 4), rng));
+  CHECK(corner.players[0].cash == 980000 && corner.players[0].position == 4 && corner.tiles[4].basePrice == 70000);
+  for (bool takeover : {false, true}) {
+    GameState win = fresh();
+    for (int tid : {4, 13, 25}) giveAuction(win, tid, 0);
+    if (takeover) giveAuction(win, 34, 1);
+    win.players[1].cash = 999999999; win.lastDice = {1, 1}; win.players[0].consecutiveDoubles = 1;
+    win.players[0].position = 34; resolveLanding(win, win.players[0], win.tiles[34]);
+    CHECK(applyAction(win, act(ActionType::Buy, 0), rng));
+    CHECK(win.phase == Phase::GameOver && win.winnerId == 0 && countOwnedAuctions(win, 0) == 4);
+    CHECK(getLegalActions(win).actions.empty());
+  }
+}
+
 int main() {
+  testAuctions();
+  testGradeChoicePurchasesAndUpgradePaths();
+  testPostStealGradeChoices();
+  testCornerGradeChoices();
+  testStartingCashAndRentScaling();
   testDoublesAndTripleDoublesJail();
   testNonDoubleResetsStreakAndBuy();
   testPassingStartPaysSalaryOnly();

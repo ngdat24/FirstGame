@@ -4,6 +4,7 @@
 
 enum class TileType {
   Institute,
+  Auction,
   Start,
   SpecialCorner,    // "Academic Affairs Office"
   RetakeExam,       // jail
@@ -27,12 +28,12 @@ struct Tile {
   TileType type = TileType::Other;
 
   // Static tile properties.
-  int basePrice = 0;
-  int upgradeCost = 0;  // cost of ONE grade step (D->C, C->B, B->A)
-  int baseRent = 0;     // rent at grade D; higher grades multiply it
+  long long basePrice = 0;  // Auction: current price for the next purchase
+  int upgradeCost = 0;  // cost of ONE grade step, D through A+
+  long long baseRent = 0;     // multiplied by the grade factor and rentPercent
 
   // Mutable game state.
   int ownerId = -1;  // -1 = unowned
   Grade grade = Grade::None;
-  int totalInvested = 0;  // basePrice + all upgrade costs paid
+  long long totalInvested = 0;  // Institute: all investment; Auction: last purchase price
 };
