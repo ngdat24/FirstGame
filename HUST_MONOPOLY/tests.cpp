@@ -154,11 +154,12 @@ static void testStealSuccessKeepsGrade() {
   giveTile(s, 2, 0, Grade::B, 150000);
   s.currentPlayerIndex = 1;
   CHECK(applyRoll(s, 1, 1));
-  CHECK(applyAction(s, act(ActionType::AttemptSteal, 1, 150000), rng));  // 100% chance
+  const long long fullB = (3LL * s.tiles[2].totalInvested + 1) / 2;  // 1.5x value = 100% chance
+  CHECK(applyAction(s, act(ActionType::AttemptSteal, 1, fullB), rng));
   CHECK(s.tiles[2].ownerId == 1);
   CHECK(s.tiles[2].grade == Grade::B);
   CHECK(s.tiles[2].totalInvested == 150000);
-  CHECK(s.players[1].cash == s.config.startCash - 150000);
+  CHECK(s.players[1].cash == s.config.startCash - fullB);
   CHECK(s.players[0].ownedTileIds.empty());
   CHECK(s.players[1].ownedTileIds.size() == 1);
 }
@@ -171,14 +172,16 @@ static void testStealFailureSinglePenaltyAndValidation() {
   CHECK(applyRoll(s, 1, 1));
   const long long ownerCash = s.players[0].cash;
 
-  const long long minB = rentFor(s, s.tiles[2]);
-  CHECK(!applyAction(s, act(ActionType::AttemptSteal, 1, 0), rng));         // bribe must be >= rent
-  CHECK(!applyAction(s, act(ActionType::AttemptSteal, 1, minB - 1), rng));  // below rent
-  CHECK(!applyAction(s, act(ActionType::AttemptSteal, 1, -5), rng));        // negative
-  CHECK(!applyAction(s, act(ActionType::AttemptSteal, 1, 2000000), rng));   // more than cash
-  CHECK(s.phase == Phase::AwaitLandingChoice);                              // nothing changed
+  const long long minB = (3LL * rentFor(s, s.tiles[2]) + 1) / 2;
+  const long long fullB = (3LL * s.tiles[2].totalInvested + 1) / 2;
+  CHECK(!applyAction(s, act(ActionType::AttemptSteal, 1, 0), rng));          // bribe must be >= 1.5x rent
+  CHECK(!applyAction(s, act(ActionType::AttemptSteal, 1, minB - 1), rng));   // just below 1.5x rent
+  CHECK(!applyAction(s, act(ActionType::AttemptSteal, 1, fullB + 1), rng));  // above 1.5x value
+  CHECK(!applyAction(s, act(ActionType::AttemptSteal, 1, -5), rng));         // negative
+  CHECK(!applyAction(s, act(ActionType::AttemptSteal, 1, 2000000), rng));    // more than cash
+  CHECK(s.phase == Phase::AwaitLandingChoice);                               // nothing changed
 
-  CHECK(applyAction(s, act(ActionType::AttemptSteal, 1, minB), rng));
+  CHECK(applyAction(s, act(ActionType::AttemptSteal, 1, minB), rng));        // 1.5x rent = 0% chance
   CHECK(s.tiles[2].ownerId == 0);                      // steal failed
   CHECK(s.players[1].cash == s.config.startCash - minB);  // lost the bribe
   CHECK(s.players[0].cash == ownerCash + minB);        // failed bribe paid to owner
@@ -602,7 +605,7 @@ static void testCardStealBuff() {
   t.currentPlayerIndex = 1;
   t.players[1].stealBonusPercent = 100;
   CHECK(applyRoll(t, 1, 1));
-  const long long minBt = rentFor(t, t.tiles[2]);
+  const long long minBt = (3LL * rentFor(t, t.tiles[2]) + 1) / 2;
   CHECK(applyAction(t, act(ActionType::AttemptSteal, 1, minBt), rng));
   CHECK(t.tiles[2].ownerId == 1);
   CHECK(t.players[1].stealBonusPercent == 0);
@@ -613,8 +616,49 @@ static void testCardStealBuff() {
   u.currentPlayerIndex = 1;
   u.players[1].stealBonusPercent = 1;
   CHECK(applyRoll(u, 1, 1));
-  const long long minBu = rentFor(u, u.tiles[2]);
+  const long long minBu = (3LL * rentFor(u, u.tiles[2]) + 1) / 2;
   CHECK(applyAction(u, act(ActionType::AttemptSteal, 1, minBu), rng));
+  CHECK(u.players[1].stealBonusPercent == 0);
+}
+
+static void testStealBonusExpires() {
+  GameState s = fresh();
+  std::mt19937 rng(1);
+  stackDeck(s, findCard(s, CardEffectType::StealBuff));
+  landOnCardTile(s);  // player 0 draws it during tempo 1
+  CHECK(s.players[0].stealBonusPercent == 25);
+  CHECK(s.players[0].stealBonusUntilTempo == 1 + s.config.stealBonusTempos - 1);  // tempos 1, 2, 3
+
+  for (int i = 0; i < 3; ++i) playQuietTurn(s, rng);  // players 1-3 finish tempo 1
+  CHECK(s.currentTempo == 2);
+  CHECK(s.players[0].stealBonusPercent == 25);  // still valid in tempo 2
+  for (int i = 0; i < 4; ++i) playQuietTurn(s, rng);
+  CHECK(s.currentTempo == 3);
+  CHECK(s.players[0].stealBonusPercent == 25);  // ...and in tempo 3 (the last valid one)
+  for (int i = 0; i < 4; ++i) playQuietTurn(s, rng);
+  CHECK(s.currentTempo == 4);
+  CHECK(s.players[0].stealBonusPercent == 0);   // gone when tempo 4 begins
+  CHECK(s.players[0].stealBonusUntilTempo == 0);
+
+  // Drawing the card again refreshes the timer instead of stacking the percentage.
+  GameState r = fresh();
+  r.currentTempo = 5;
+  stackDeck(r, findCard(r, CardEffectType::StealBuff));
+  landOnCardTile(r);
+  CHECK(r.players[0].stealBonusUntilTempo == 7);
+  r.currentPlayerIndex = 0;
+  r.phase = Phase::AwaitRoll;
+  r.currentTempo = 6;
+  stackDeck(r, findCard(r, CardEffectType::StealBuff));
+  landOnCardTile(r);
+  CHECK(r.players[0].stealBonusPercent == 25);
+  CHECK(r.players[0].stealBonusUntilTempo == 8);
+
+  // A bonus that was already used up does not come back.
+  GameState u = fresh();
+  u.players[1].stealBonusPercent = 0;
+  u.players[1].stealBonusUntilTempo = 9;
+  for (int i = 0; i < 4; ++i) playQuietTurn(u, rng);
   CHECK(u.players[1].stealBonusPercent == 0);
 }
 
@@ -758,7 +802,9 @@ static void testLegalActions() {
   CHECK(l.actions.size() == 2 && hasAction(l, ActionType::PayRent) &&
         hasAction(l, ActionType::AttemptSteal));
   CHECK(!hasAction(l, ActionType::Decline) && !hasAction(l, ActionType::Buy));
-  CHECK(l.minBribe == rentFor(c, c.tiles[3]) && l.maxBribe == c.players[0].cash);
+  const long long expectedMin = (3LL * rentFor(c, c.tiles[3]) + 1) / 2;
+  const long long expectedMax = std::min(c.players[0].cash, (3LL * c.tiles[3].totalInvested + 1) / 2);
+  CHECK(l.minBribe == expectedMin && l.maxBribe == expectedMax);
   CHECK(allListedAccepted(c));
   c.players[0].cash = 0;
   l = getLegalActions(c);
@@ -829,6 +875,7 @@ int main() {
   testCardSkipTurn();
   testCardHalveDice();
   testCardStealBuff();
+  testStealBonusExpires();
   testCardRentHoliday();
   testCardsSwitchAndRegularTiles();
   testRandomFirstPlayer();

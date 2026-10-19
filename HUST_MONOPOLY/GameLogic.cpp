@@ -52,6 +52,7 @@ void releaseTileToBank(GameState& s, Tile& t) {
 // chạy trước hàm để gọi
 void endGame(GameState& s);
 void nextTurn(GameState& s);
+void expireStealBonuses(GameState& s);
 void finishLanding(GameState& s);
 void moveAndResolve(GameState& s, Player& p, int steps);
 void settleDebt(GameState& s);
@@ -84,6 +85,17 @@ void endGame(GameState& s) {
                     " (với tổng giá trị học phần: " + std::to_string(bestWorth) + ")");
 }
 
+// A "Phao thi" bonus that was never used disappears once its last valid tempo is over.
+void expireStealBonuses(GameState& s) {
+  for (Player& p : s.players) {
+    if (p.stealBonusPercent > 0 && s.currentTempo > p.stealBonusUntilTempo) {
+      logEvent(s, p.name + ": phao thi hết hạn.");
+      p.stealBonusPercent = 0;
+      p.stealBonusUntilTempo = 0;
+    }
+  }
+}
+
 void nextTurn(GameState& s) {
   if (countAlivePlayers(s) <= 1) {  // check số ng còn
     endGame(s);
@@ -109,6 +121,7 @@ void nextTurn(GameState& s) {
       ++s.currentTempo;
       logEvent(s, "--- Tempo " + std::to_string(s.currentTempo) + " begins ---");
       examSeasonPayout(s);
+      expireStealBonuses(s);
     }
 
     Player& next = s.players[idx];
@@ -321,6 +334,7 @@ void drawAndApplyCard(GameState& s, Player& p) {
 
     case CardEffectType::StealBuff:
       p.stealBonusPercent = std::max(p.stealBonusPercent, static_cast<int>(c.value));
+      p.stealBonusUntilTempo = s.currentTempo + s.config.stealBonusTempos - 1;  // a new card refreshes the timer
       finishLanding(s);
       return;
 
@@ -382,9 +396,11 @@ bool handleLandingChoice(GameState& s, Player& p, const Action& a, std::mt19937&
       chargeOrLiquidate(s, rentFor(s, t), t.ownerId, 0);
       return true;
     case ActionType::AttemptSteal: {
-      if (!opponents || t.grade == Grade::APlus) return false;  // A+ is locked from stealing
-      const long long minB = std::max(1LL, rentFor(s, t));
-      if (a.amount < minB || a.amount > p.cash) return false;  // cash only, no loans
+      if (!opponents || t.grade == Grade::APlus) return false;
+      const long long minB = (3LL * rentFor(s, t) + 1) / 2;
+      const long long fullB = (3LL * t.totalInvested + 1) / 2;
+      const long long maxB = std::min(p.cash, fullB);
+      if (minB >= fullB || a.amount < minB || a.amount > maxB) return false;
       attemptSteal(s, p, t, a.amount, rng);
       finishLanding(s);
       return true;
@@ -549,14 +565,19 @@ bool upgradeTile(GameState& s, Player& p, Tile& t) {
 }
 
 bool attemptSteal(GameState& s, Player& p, Tile& t, long long bribe, std::mt19937& rng) {
-  // Success chance = bribe / total invested value of the tile, capped at 100%.
-  double rate = 1.0;
-  if (t.totalInvested > 0) rate = static_cast<double>(bribe) / t.totalInvested;
+  const long long minB = (3LL * rentFor(s, t) + 1) / 2;
+  const long long fullB = (3LL * t.totalInvested + 1) / 2;
+  double rate = 0.0;
+  if (fullB > minB) {
+    rate = static_cast<double>(bribe - minB) / static_cast<double>(fullB - minB);
+  }
+  rate = std::max(0.0, rate);
   if (p.stealBonusPercent > 0) {  // "Phao thi" card: one-shot bonus, used up either way
     rate += p.stealBonusPercent / 100.0;
     logEvent(s, p.name + " dùng tiền để +" + std::to_string(p.stealBonusPercent) +
                     "% lấy tỉ lệ cướp điểm.");
     p.stealBonusPercent = 0;
+    p.stealBonusUntilTempo = 0;
   }
   rate = std::min(1.0, rate);
 
@@ -758,11 +779,12 @@ LegalActions getLegalActions(const GameState& s) {
         add(ActionType::Decline);
       } else {  // somebody else's tile: pay rent or try to steal (unless locked at A+)
         add(ActionType::PayRent);
-        const long long minB = std::max(1LL, rentFor(s, t));
-        if (t.grade != Grade::APlus && p.cash >= minB) {
+        const long long minB = (3LL * rentFor(s, t) + 1) / 2;
+        const long long fullB = (3LL * t.totalInvested + 1) / 2;
+        if (t.grade != Grade::APlus && minB < fullB && p.cash >= minB) {
           add(ActionType::AttemptSteal);
           out.minBribe = minB;
-          out.maxBribe = p.cash;
+          out.maxBribe = std::min(p.cash, fullB);
         }
       }
       break;

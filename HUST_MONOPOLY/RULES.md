@@ -1,4 +1,4 @@
-# HUST Monopoly — Frozen Rules Spec v1.1
+# HUST Monopoly — Frozen Rules Spec v1.0
 
 Describes exactly what the engine (`GameLogic.cpp`) does. If the code and this file ever
 disagree, that is a bug in one of them: fix it and add a test.
@@ -20,9 +20,7 @@ version. New mechanic: backlog, not during Phase 2.
 - Institute number *k* (0..31, in board order): price `100,000 + 10,000·k`, upgrade cost
   `price/2` per grade step, `baseRent = price/10`.
 
-## 2. Turns, tempos and the calendar
-- **Calendar:** 1 tempo = 1 week. 1 semester = 16 tempos (12 study weeks + 4 exam weeks). A game
-  lasts **3 semesters = 48 tempos** (1.5 academic years) and ends right after an Exam Season.
+## 2. Turns and tempos
 - A **tempo** = every living player has had their turn. Tempo 1 starts with the first player;
   tempo *n+1* begins when the turn comes back to the first player's seat (even if that player
   was expelled or is skipped). Skipped turns still count toward the tempo.
@@ -32,7 +30,7 @@ version. New mechanic: backlog, not during Phase 2.
   moving; the turn ends.
 - The turn ends immediately (no bonus roll even on doubles) when the player is sent to jail
   or draws *Đi chơi với bạn gái quên học*.
-- **Start salary** (75,000) is paid when a normal move passes or lands on tile 0 (dice rolls
+- **Start salary** (100,000) is paid when a normal move passes or lands on tile 0 (dice rolls
   and card moves). Teleporting at the Special Corner never pays it.
 
 ## 3. Retake Exam room (jail)
@@ -60,14 +58,21 @@ version. New mechanic: backlog, not during Phase 2.
 - **Card tiles:** draw the top card of the single shared deck; its effect applies at once.
 
 ## 5. Rent and stealing
-- **Rent** = `baseRent × factor`, factor = D 3 · C 6 · B 12 · A 24 (so a 100,000 Institute
-  charges 30,000 / 60,000 / 120,000 / 240,000 at grades D / C / B / A). Paid to the owner.
-- **Steal (Proxy Test-Taker):** the player picks a bribe from **1 to their cash** (cash only,
-  no loans). Success chance = `min(1, bribe / totalInvested + bonus)`, where `totalInvested`
-  = base price + all upgrade costs paid, and `bonus` is the one-shot Phao thi card bonus (used
-  up by the attempt either way). The bribe is always lost (paid to the bank).
-  - **Success:** the tile changes owner and **keeps its grade and totalInvested**.
-  - **Failure:** the bribe is lost and **no rent is owed** (single penalty).
+- **Rent** = `baseRent × factor`, factor = D 3 · C 6 · B 9 · A 18 · A+ 40. Paid to the owner.
+- **Steal (Proxy Test-Taker):** only legal when `grade != A+` and `1.5 × rent < 1.5 × totalInvested`.
+  The player picks a bribe in `[minBribe, maxBribe]` where `minBribe = ceil(1.5 × rent)` (using normal rent,
+  even during Rent Holiday) and `maxBribe = min(cash, ceil(1.5 × totalInvested))`.
+  Success chance = `clamp((bribe - 1.5 × rent) / (1.5 × totalInvested - 1.5 × rent) + bonus, 0, 1)`.
+  - **Success:** the bribe goes to the bank and the tile changes owner (keeping its grade and `totalInvested`).
+  - **Failure:** the bribe goes to the tile's owner and no extra rent is owed.
+  - **Example (200,000 Institute):**
+    | Grade | Rent | 0% Bribe (`1.5×rent`) | 100% Bribe (`1.5×value`) |
+    |---|---|---|---|
+    | D | 60,000 | 90,000 | 300,000 |
+    | C | 120,000 | 180,000 | 450,000 |
+    | B | 180,000 | 270,000 | 600,000 |
+    | A | 360,000 | 540,000 | 750,000 |
+    | A+ | 800,000 | locked (unstealable) | locked (unstealable) |
 
 ## 6. Debts, liquidation, expulsion
 - Forced payments are: rent, the forced jail fee, and card fines. Voluntary payments (buy,
@@ -82,8 +87,8 @@ version. New mechanic: backlog, not during Phase 2.
 - If only one player remains, the game ends immediately and they win.
 
 ## 7. Exam Season
-At the start of every tempo whose number within its 16-tempo semester is **13–16** (tempos
-13–16, 29–32 and 45–48 of a game), every living player receives **50,000 per grade-A Institute and 20,000 per grade-B Institute** from the
+At the start of every tempo whose number within its 16-tempo semester is **13–16**, every living
+player receives **50,000 per grade-A Institute and 20,000 per grade-B Institute** from the
 bank. Tempo 1 has no payout.
 
 ## 8. Cards (11 cards, one shared deck)
@@ -107,7 +112,7 @@ when the draw pile runs out. Durations in the last column.
 (The engine also supports a "teleport to tile N" effect; no card uses it.)
 
 ## 9. End of game and winner
-- The game ends when **tempo 48 concludes** (after the last player's turn) or when one player
+- The game ends when **tempo 64 concludes** (after the last player's turn) or when one player
   is left.
 - **Net worth** = cash + Σ `totalInvested` of owned Institutes. Highest wins; ties → more
   cash → lower player id.
@@ -164,19 +169,9 @@ The JSON wire format that carries all of this is in `PROTOCOL.md` (v1); a UI sho
 engine only through it.
 
 ## 13. How this spec is verified
-`tests.cpp` (1342 checks: every rule above), `tests_protocol.cpp` (the JSON layer: strict
+`tests.cpp` (1341 checks: every rule above), `tests_protocol.cpp` (the JSON layer: strict
 parsing, hidden state, full games played by a client that sees only JSON, endpoint fuzzing),
 `./sim --games N` (bot games with a full
 consistency check after every action), `./sim --fuzz` (garbage actions must be rejected without
 changing the state, and `getLegalActions` must agree exactly with `applyAction`), and all of it
 under `-fsanitize=address,undefined`.
-
-## 14. Changelog
-- **v1.2** (second playtest, preset "48 A"): game length 32 → **48 tempos** (3 semesters); Start
-  salary 50,000 → **75,000**; rent factors 4/8/16/32 → **3/6/12/24**. Start cash (700,000),
-  prices, fees, cards and all rules are unchanged. Reason: with human players the 32 B preset
-  felt too poor (50,000 salary left nobody able to buy and upgrade). Simulated with the default
-  bots: see section 13 for how to reproduce.
-- **v1.1** (first playtest, preset "32 B"): game length 64 → 32 tempos; Start salary 100,000 →
-  50,000; rent factors 2/4/8/16 → 4/8/16/32. Replaced by v1.2.
-- **v1.0** — first frozen specification (64 tempos, salary 100,000, rent factors 2/4/8/16).
