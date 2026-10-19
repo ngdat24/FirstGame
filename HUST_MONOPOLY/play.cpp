@@ -241,10 +241,10 @@ int main(int argc, char** argv) {
             continue;
           }
           const json& t = snap["tiles"][snap["pending_tile_id"].get<size_t>()];
-          const double pct =
-              std::min(100.0, 100.0 * static_cast<double>(bribe) /
-                                  std::max<long long>(1, t["total_invested"].get<long long>()) +
-                                  snap["players"][static_cast<size_t>(who)]["steal_bonus_percent"].get<int>());
+          const long long zeroB = (3LL * t["rent"].get<long long>() + 1) / 2;
+          const long long fullB = (3LL * t["total_invested"].get<long long>() + 1) / 2;
+          const double basePct = (fullB > zeroB) ? 100.0 * static_cast<double>(bribe - zeroB) / static_cast<double>(fullB - zeroB) : 0.0;
+          const double pct = std::min(100.0, std::max(0.0, basePct) + snap["players"][static_cast<size_t>(who)]["steal_bonus_percent"].get<int>());
           std::cout << " Chance of success: " << pct << "%\n";
         }
         chosen["amount"] = bribe;

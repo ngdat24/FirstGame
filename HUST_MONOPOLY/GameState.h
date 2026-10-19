@@ -24,6 +24,7 @@ struct GameConfig {
   int rentFactor[6] = {0, 3, 6, 9, 18, 40};  // x baseRent, indexed by Grade: None,D,C,B,A,APlus
   long long examBonusA = 50000;
   long long examBonusAPlus = 100000;
+  int stealBonusTempos = 3;      // the "Phao thi" bonus expires after this many tempos (the tempo it is drawn in counts as the first)
   bool cardsEnabled = true;      // false: the card tiles do nothing (for A/B simulations)
 };
 

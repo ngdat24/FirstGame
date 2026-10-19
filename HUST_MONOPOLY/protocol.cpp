@@ -183,6 +183,7 @@ json snapshotJson(const GameState& s) {
                        {"skip_turns", p.skipTurns},
                        {"halve_next_dice", p.halveNextDice},
                        {"steal_bonus_percent", p.stealBonusPercent},
+                       {"steal_bonus_until_tempo", p.stealBonusUntilTempo},
                        {"owned_tile_ids", p.ownedTileIds}});
   }
   j["players"] = players;

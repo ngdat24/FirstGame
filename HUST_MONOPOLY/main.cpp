@@ -51,9 +51,10 @@ Action botChoose(const GameState& s, std::mt19937& rng) {
       } else if (t.ownerId == p.id) {
         a.type = (t.grade != Grade::APlus && p.cash - t.upgradeCost >= reserve) ? ActionType::Upgrade : ActionType::Decline;
       } else {
-        const long long minB = std::max(1LL, rentFor(s, t));
-        const long long bribe = std::max<long long>(minB, t.totalInvested / 2);
-        if (t.grade != Grade::APlus && bribe >= minB && p.cash - bribe >= reserve && chance(rng, g_stealChance)) {
+        const long long minB = (3LL * rentFor(s, t) + 1) / 2;
+        const long long fullB = (3LL * t.totalInvested + 1) / 2;
+        const long long bribe = (minB + fullB) / 2;  // 50% steal chance
+        if (t.grade != Grade::APlus && minB < fullB && p.cash >= bribe && p.cash - bribe >= reserve && chance(rng, g_stealChance)) {
           a.type = ActionType::AttemptSteal;
           a.amount = bribe;
         } else {
@@ -125,6 +126,7 @@ unsigned long long stateDigest(const GameState& s) {
     h = mixHash(h, p.skipTurns);
     h = mixHash(h, p.halveNextDice);
     h = mixHash(h, p.stealBonusPercent);
+    h = mixHash(h, p.stealBonusUntilTempo);
     for (int id : p.ownedTileIds) h = mixHash(h, id);
     h = mixHash(h, -1);
   }
@@ -161,7 +163,7 @@ std::string checkInvariants(const GameState& s) {
     if (p.cash < 0) return p.name + " has negative cash";
     if (p.position < 0 || p.position >= nTiles) return p.name + " has invalid position";
     if (p.isBankrupt && !p.ownedTileIds.empty()) return p.name + " expelled but owns tiles";
-    if (p.skipTurns < 0 || p.stealBonusPercent < 0 || p.stealBonusPercent > 100)
+    if (p.skipTurns < 0 || p.stealBonusPercent < 0 || p.stealBonusPercent > 100 || p.stealBonusUntilTempo < 0)
       return p.name + " has an invalid status effect";
     for (int id : p.ownedTileIds)
       if (s.tiles[id].ownerId != p.id) return p.name + " lists a tile it does not own";

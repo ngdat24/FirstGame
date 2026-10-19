@@ -17,4 +17,5 @@ struct Player {
   int skipTurns = 0;           // how many of this player's upcoming turns are skipped
   bool halveNextDice = false;  // next movement is halved (rounded down)
   int stealBonusPercent = 0;   // extra % on the next steal attempt, used up by it
+  int stealBonusUntilTempo = 0;  // last tempo in which that bonus still works (see GameConfig::stealBonusTempos)
 };

@@ -140,7 +140,6 @@ class IsoBoardCanvas extends Control:
 				"C": h = 23.0
 				"B": h = 29.0
 				"A": h = 36.0
-				"A+": h = 44.0
 				_: h = 14.0
 
 		var t0: Vector2 = _iso(c, r, origin)
@@ -509,7 +508,8 @@ func _render_snapshot(snap: Dictionary) -> void:
 		if bool(p.get("halve_next_dice", false)):
 			status_tags.append("1/2 Xúc xắc")
 		if int(p.get("steal_bonus_percent", 0)) > 0:
-			status_tags.append("+%d%% Phao thi" % int(p.get("steal_bonus_percent", 0)))
+			var bonus_left: int = maxi(0, int(p.get("steal_bonus_until_tempo", 0)) - tempo + 1)
+			status_tags.append("+%d%% Phao thi (còn %d tempo)" % [int(p.get("steal_bonus_percent", 0)), bonus_left])
 
 		var extra: String = (" | " + ", ".join(status_tags)) if status_tags.size() > 0 else ""
 		player_cards[i].text = (
@@ -589,8 +589,10 @@ func _build_steal_controls(act: Dictionary, min_bribe: int, max_bribe: int, tile
 	if cur_pid >= 0 and cur_pid < players.size():
 		bonus_pct = int(players[cur_pid].get("steal_bonus_percent", 0))
 
-	# Cap max_bribe at the exact amount needed for 100% steal chance so players never waste money
-	var needed_for_100: int = int(ceil(float(total_inv) * float(maxi(0, 100 - bonus_pct)) / 100.0))
+	var zero_b: int = min_bribe
+	var full_b: int = (3 * total_inv + 1) / 2
+	var span: int = maxi(1, full_b - zero_b)
+	var needed_for_100: int = zero_b + int(ceil(float(span) * float(maxi(0, 100 - bonus_pct)) / 100.0))
 	max_bribe = maxi(min_bribe, mini(max_bribe, needed_for_100))
 
 	var panel := PanelContainer.new()
@@ -607,7 +609,7 @@ func _build_steal_controls(act: Dictionary, min_bribe: int, max_bribe: int, tile
 	vbox.add_theme_constant_override("separation", 6)
 	panel.add_child(vbox)
 
-	var default_bribe: int = clampi(total_inv / 2, min_bribe, max_bribe)
+	var default_bribe: int = clampi((min_bribe + max_bribe) / 2, min_bribe, max_bribe)
 
 	var info_lbl := Label.new()
 	info_lbl.add_theme_font_size_override("font_size", 13)
@@ -641,10 +643,10 @@ func _build_steal_controls(act: Dictionary, min_bribe: int, max_bribe: int, tile
 	steal_btn.custom_minimum_size = Vector2(0, 40)
 
 	var update_steal_ui: Callable = func(bribe_val: int) -> void:
-		var raw_pct: float = (float(bribe_val) / float(total_inv)) * 100.0 + float(bonus_pct)
+		var raw_pct: float = (float(bribe_val - zero_b) / float(span)) * 100.0 + float(bonus_pct)
 		var win_pct: float = clampf(raw_pct, 0.0, 100.0)
 		var bonus_note: String = (" (đã cộng +%d%% Phao thi)" % bonus_pct) if bonus_pct > 0 else ""
-		info_lbl.text = "🕵️ Cược Thi Hộ (Vốn ô đất: %s VND)%s" % [_fmt(total_inv), bonus_note]
+		info_lbl.text = "🕵️ Cược Thi Hộ (0%% = %s | 100%% = %s)%s" % [_fmt(zero_b), _fmt(needed_for_100), bonus_note]
 		steal_btn.text = "🔥 Cược %s VND  ➔  Tỷ lệ cướp thành công: %.1f%%" % [_fmt(bribe_val), win_pct]
 
 	for target_pct in [25, 50, 75, 100]:
@@ -653,7 +655,7 @@ func _build_steal_controls(act: Dictionary, min_bribe: int, max_bribe: int, tile
 		qbtn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		qbtn.pressed.connect(func() -> void:
 			var needed_pct: int = maxi(0, target_pct - bonus_pct)
-			var target_bribe: int = int(ceil(float(total_inv) * float(needed_pct) / 100.0))
+			var target_bribe: int = zero_b + int(ceil(float(span) * float(needed_pct) / 100.0))
 			target_bribe = clampi(target_bribe, min_bribe, max_bribe)
 			slider.value = target_bribe
 			spin.value = target_bribe
@@ -704,11 +706,8 @@ func _format_action_button(a_type: String, tid: int, tiles: Array, pending_tid: 
 			var bp: int = int(tiles[tid].get("base_price", 0)) if (tid >= 0 and tid < tiles.size()) else 0
 			return "🚀 Dịch chuyển + Mua %s (Phí 20k + %s)" % [t_name, _fmt(bp)]
 		"teleport_owned":
-			var gr: String = str(tiles[tid].get("grade", "")) if (tid >= 0 and tid < tiles.size()) else ""
-			if gr == "A+":
-				return "🏠 Dịch chuyển về %s (Đã đạt A+, chỉ tốn phí dịch chuyển)" % t_name
 			var uc: int = int(tiles[tid].get("upgrade_cost", 0)) if (tid >= 0 and tid < tiles.size()) else 0
-			return "🏠 Dịch chuyển + Nâng cấp %s (+%s VND)" % [t_name, _fmt(uc)]
+			return "🏠 Dịch chuyển + Nâng cấp %s (Phí 20k + %s)" % [t_name, _fmt(uc)]
 		"sell_tile":
 			var sell_val: int = int(tiles[tid].get("sell_value", 0)) if (tid >= 0 and tid < tiles.size()) else 0
 			return "🔨 Thanh lý %s (Thu về +%s VND)" % [t_name, _fmt(sell_val)]
